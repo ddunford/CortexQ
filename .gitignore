@@ -1,0 +1,215 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# Environment Variables
+.env
+.env.local
+.env.production
+.env.staging
+.env.development
+
+# API Keys and Secrets
+**/secrets/
+**/*secret*
+**/*key*
+**/*password*
+**/*token*
+.secrets
+api_keys.json
+credentials.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Node.js (for future frontend)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+package-lock.json
+yarn.lock
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Database
+*.db
+*.sqlite3
+*.sql.backup
+postgres_data/
+redis_data/
+
+# Logs
+logs/
+*.log
+**/*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# File uploads and storage
+uploads/
+file_storage/
+temp/
+*.tmp
+**/uploads/**
+**/temp/**
+
+# Vector databases and indices
+*.faiss
+*.index
+vector_index/
+embeddings/
+**/*embeddings*
+**/*index*
+
+# Model files
+*.bin
+*.safetensors
+models/
+**/*model*
+*.pkl
+*.pickle
+
+# OS
+.DS_Store
+Thumbs.db
+*.DS_Store
+
+# JetBrains
+.idea/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyCharm
+.idea/
+
+# Spyder
+.spyderproject
+.spyproject
+
+# Rope
+.ropeproject
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Backup files
+*.bak
+*.backup
+*.orig
+
+# Enterprise RAG specific
+**/crawl_data/
+**/processed_files/
+**/cache/
+**/.cache/
+**/monitoring/
+**/metrics/
+**/analytics/
+
+# Service-specific ignores
+services/**/uploads/
+services/**/cache/
+services/**/logs/
+services/**/temp/
+services/**/*.log
+
+# Docker volumes (local development)
+postgres_data/
+redis_data/
+file_storage/
+vector_index/
+
+# Configuration overrides
+**/config/local.*
+**/config/development.*
+**/config/production.*
+docker-compose.local.yml
+docker-compose.dev.yml
+
+# SSL certificates
+*.pem
+*.key
+*.crt
+*.cert
+ssl/
+certs/
+
+# Monitoring and analytics
+grafana/
+prometheus/
+logs/
+metrics/
+
+# Temporary development files
+*.scratch
+*.dev
+*.test
+test_*
+debug_*
+
+# Large files that shouldn't be committed
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.dump
+
+# System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db 
