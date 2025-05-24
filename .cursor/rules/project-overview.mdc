@@ -1,0 +1,34 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Enterprise RAG Searcher Project Overview
+
+This project implements an **Enterprise-Ready Retrieval-Augmented Generation (RAG) Searcher** with chatbot capabilities and intelligent agents. The complete requirements are documented in [PRD.md](mdc:docs/PRD.md).
+
+## Core Purpose
+- Ingest and index multiple data sources (files, websites, APIs)
+- Provide conversational chatbot interface for querying indexed content
+- Intelligently route queries using agent-based classification
+- Generate precise answers using RAG (Retrieval-Augmented Generation)
+
+## Target Users
+- Enterprise support teams
+- Software engineers and QA teams
+- Product managers
+- General enterprise users for self-service knowledge retrieval
+
+## Key Capabilities
+- **Data Ingestion**: Files (PDF, DOCX, code), web crawling, API connectors
+- **Conversational Interface**: Multi-modal input, contextual awareness, rich responses
+- **Intelligent Routing**: Intent classification, specialized workflows for bugs/features/training
+- **RAG Processing**: Vector embeddings, hybrid search, schema-aware retrieval
+- **Enterprise Features**: RBAC, audit logging, compliance, scalability
+
+## Architecture Layers
+1. **Ingestion Layer**: File services, API integrations, web crawlers
+2. **Indexing & Search**: Vector databases, embedding models, schema parsers
+3. **Query Processing**: Classification agents, RAG handlers, context management
+4. **User Interface**: Web chat UI, Slack/Teams bots, admin dashboard
+5. **Infrastructure**: Kubernetes deployment, security, monitoring

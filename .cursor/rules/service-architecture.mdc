@@ -1,0 +1,197 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Service Architecture & Component Structure
+
+## Project Directory Structure
+Follow the directory structure created by [project-setup.mdc](mdc:.cursor/rules/project-setup.mdc):
+
+```
+services/
+├── ingestion/
+│   ├── file-service/          # File upload and processing
+│   ├── crawler-service/       # Web content crawling
+│   └── api-service/           # External API integrations
+├── search/
+│   ├── vector-service/        # Vector embeddings and similarity search
+│   ├── schema-service/        # Structured data parsing
+│   └── hybrid-service/        # Combined vector + keyword search
+├── query/
+│   ├── classification-service/ # Intent detection and routing
+│   ├── rag-service/           # Retrieval-Augmented Generation
+│   └── agent-service/         # Specialized workflow agents
+├── ui/
+│   ├── chat-api/              # Real-time chat API and WebSocket
+│   ├── admin-service/         # Management dashboard
+│   └── bot-service/           # Slack/Teams integrations
+└── infrastructure/
+    ├── auth-service/          # Authentication and authorization
+    ├── audit-service/         # Logging and compliance
+    └── config-service/        # Centralized configuration
+```
+
+## Core Services Implementation
+
+### 1. Ingestion Services
+
+#### File Service (`services/ingestion/file-service/`)
+**Purpose**: Handle file uploads, parsing, and metadata extraction
+**Key Files**:
+- `src/api/upload.py` - File upload endpoints
+- `src/parsers/` - Document parsers (PDF, DOCX, etc.)
+- `src/storage/` - Cloud storage integration
+- `src/queue/` - Processing queue management
+
+**API Endpoints**:
+- `POST /upload` - File upload with metadata
+- `GET /files/{id}` - File information and status
+- `DELETE /files/{id}` - File removal
+
+#### Crawler Service (`services/ingestion/crawler-service/`)
+**Purpose**: Crawl websites and extract content
+**Key Files**:
+- `src/crawler/engine.py` - Main crawling logic
+- `src/scheduler/` - Crawl scheduling and frequency
+- `src/extractors/` - Content extraction pipelines
+
+#### API Service (`services/ingestion/api-service/`)
+**Purpose**: Connect to external APIs (Jira, GitHub, etc.)
+**Key Files**:
+- `src/connectors/` - API-specific connector implementations
+- `src/auth/` - OAuth and API key management
+- `src/mapping/` - Schema mapping between external and internal formats
+
+### 2. Search Services
+
+#### Vector Service (`services/search/vector-service/`)
+**Purpose**: Generate embeddings and perform similarity search
+**Key Files**:
+- `src/embeddings/` - LLM integration (Ollama/OpenAI)
+- `src/index/` - Vector database management
+- `src/search/` - Similarity search algorithms
+
+**API Endpoints**:
+- `POST /embed` - Generate embeddings for text
+- `POST /search` - Vector similarity search
+- `GET /index/status` - Index health and statistics
+
+#### Schema Service (`services/search/schema-service/`)
+**Purpose**: Parse and validate structured data
+**Key Files**:
+- `src/parsers/` - JSON, XML, YAML parsers
+- `src/validators/` - Schema validation logic
+- `src/enrichment/` - Metadata enrichment
+
+#### Hybrid Service (`services/search/hybrid-service/`)
+**Purpose**: Combine vector and keyword search
+**Key Files**:
+- `src/fusion/` - Result ranking and fusion algorithms
+- `src/optimization/` - Query optimization
+- `src/caching/` - Search result caching
+
+### 3. Query Processing Services
+
+#### Classification Service (`services/query/classification-service/`)
+**Purpose**: Detect intent and route queries
+**Key Files**:
+- `src/models/` - Intent classification models
+- `src/training/` - Model training and evaluation
+- `src/routing/` - Query routing logic
+
+#### RAG Service (`services/query/rag-service/`)
+**Purpose**: Coordinate retrieval and generation
+**Key Files**:
+- `src/retrieval/` - Document retrieval logic
+- `src/generation/` - LLM response generation
+- `src/context/` - Context window management
+
+#### Agent Service (`services/query/agent-service/`)
+**Purpose**: Implement specialized workflows
+**Key Files**:
+- `src/workflows/` - Bug, feature, training workflows
+- `src/handlers/` - Workflow-specific processing
+- `src/templates/` - Response templates
+
+### 4. User Interface Services
+
+#### Chat API (`services/ui/chat-api/`)
+**Purpose**: Real-time chat interface
+**Key Files**:
+- `src/websocket/` - WebSocket connection handling
+- `src/sessions/` - User session management
+- `src/history/` - Conversation history
+
+#### Admin Service (`services/ui/admin-service/`)
+**Purpose**: Administrative dashboard
+**Key Files**:
+- `src/dashboard/` - Dashboard components
+- `src/config/` - Configuration management UI
+- `src/monitoring/` - System health monitoring
+
+#### Bot Service (`services/ui/bot-service/`)
+**Purpose**: External platform integrations
+**Key Files**:
+- `src/slack/` - Slack bot implementation
+- `src/teams/` - Microsoft Teams integration
+- `src/webhooks/` - Webhook handling
+
+### 5. Infrastructure Services
+
+#### Auth Service (`services/infrastructure/auth-service/`)
+**Purpose**: Authentication and authorization
+**Key Files**:
+- `src/oauth/` - OAuth2 implementation
+- `src/jwt/` - JWT token management
+- `src/rbac/` - Role-based access control
+
+#### Audit Service (`services/infrastructure/audit-service/`)
+**Purpose**: Logging and compliance
+**Key Files**:
+- `src/logging/` - Audit event logging
+- `src/compliance/` - GDPR/CCPA compliance
+- `src/reporting/` - Audit reports
+
+#### Config Service (`services/infrastructure/config-service/`)
+**Purpose**: Centralized configuration
+**Key Files**:
+- `src/management/` - Configuration CRUD operations
+- `src/validation/` - Configuration validation
+- `src/distribution/` - Config distribution to services
+
+## Inter-Service Communication
+
+### Synchronous (HTTP/REST)
+- Real-time operations between UI and backend services
+- Configuration queries and updates
+- Health checks and status endpoints
+
+### Asynchronous (Message Queues)
+- File processing workflows
+- Long-running crawl operations
+- Batch embedding generation
+
+### Event-Driven
+- Configuration changes
+- User activity events
+- System alerts and notifications
+
+## Development Guidelines
+
+### Service Dependencies
+- Each service should have minimal external dependencies
+- Use dependency injection for testability
+- Implement circuit breakers for external service calls
+
+### Data Storage
+- Each service owns its data
+- Use shared databases only for truly shared data
+- Implement proper data migration strategies
+
+### Testing Strategy
+- Unit tests for each service module
+- Integration tests for service interactions
+- Contract tests for API compatibility
+
+This architecture supports the enterprise requirements while maintaining clear separation of concerns and scalability.

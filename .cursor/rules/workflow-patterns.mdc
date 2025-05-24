@@ -1,0 +1,131 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Workflow Patterns & Agent Behaviors
+
+## Intent Classification Workflow
+```
+User Query → Intent Classifier → Route to Specialized Agent → Generate Response
+```
+
+### Classification Categories
+1. **Bug Report Detection**: Error messages, crashes, unexpected behavior
+2. **Feature Request**: Enhancement requests, new functionality
+3. **Training/Documentation**: How-to questions, learning resources
+4. **General Query**: Fallback for unclear intent
+
+## Specialized Agent Workflows
+
+### 1. Bug Detection Workflow
+**Trigger**: Query classified as potential bug report
+
+**Process**:
+1. **Cross-reference Training Materials**
+   - Search indexed FAQs and known issues database
+   - Match error patterns against documented problems
+   - Retrieve resolution steps if available
+
+2. **Code Pattern Analysis**
+   - Scan uploaded code snippets for matching error patterns
+   - Search codebase for similar issues and fixes
+   - Analyze stack traces and error logs
+
+3. **Generate Internal Dev Notes**
+   - Summarize probable cause based on analysis
+   - Create structured bug report format
+   - Include relevant code snippets and error details
+   - Tag for developer review if unresolved
+
+**Example**: 
+```
+Input: "The app crashes when I upload a large file. Is this a known issue?"
+Output: 
+- Known issue match: File size limit exceeded
+- Code reference: upload-handler.js line 45
+- Dev note: Memory allocation issue with files >50MB
+- Resolution: Implement chunked upload or increase memory limit
+```
+
+### 2. Feature Request Workflow
+**Trigger**: Query classified as feature request
+
+**Process**:
+1. **Backlog Search**
+   - Query Jira/project management tools
+   - Search product roadmap and requirements
+   - Check Confluence product documentation
+
+2. **Existing Feature Detection**
+   - Search current feature documentation
+   - Identify similar or related existing functionality
+   - Suggest workarounds if available
+
+3. **Feature Candidate Processing**
+   - Flag as new feature candidate if not found
+   - Create structured feature request format
+   - Route to product management for review
+   - Track request in system for future reference
+
+**Example**:
+```
+Input: "Can we bulk edit records in the admin panel?"
+Output:
+- Existing feature check: Individual edit available
+- Workaround: CSV export/import for bulk changes
+- Status: Flagged for PM review - bulk edit enhancement
+```
+
+### 3. Training & Documentation Workflow
+**Trigger**: Query classified as training/help request
+
+**Process**:
+1. **Documentation Search**
+   - Vector search across training materials
+   - Keyword matching in user guides and FAQs
+   - Schema-aware search in structured knowledge base
+
+2. **Contextual Response Generation**
+   - Retrieve most relevant documentation sections
+   - Generate step-by-step instructions
+   - Include code examples and screenshots if available
+
+3. **Resource Linking**
+   - Provide direct links to full documentation
+   - Suggest related training modules
+   - Offer follow-up assistance
+
+**Example**:
+```
+Input: "How do I configure multi-region deployments?"
+Output:
+- Step-by-step guide from deployment documentation
+- Code examples for Kubernetes configuration
+- Links to advanced deployment patterns
+- Related: disaster recovery setup guide
+```
+
+## Fallback Mechanisms
+
+### Confidence Scoring
+- Each workflow includes confidence scoring (0-1)
+- Threshold for automatic processing vs. human review
+- Low confidence triggers manual review queue
+
+### Human Handoff
+- Ambiguous queries forwarded to human reviewers
+- Context preservation for seamless handoff
+- Feedback loop for improving classification
+
+### Multi-Intent Handling
+- Queries with multiple intents processed sequentially
+- Combined responses with clear section separation
+- Priority routing for urgent issues (bugs over features)
+
+## Response Formatting Standards
+- **Structured Output**: Clear sections for different types of information
+- **Rich Media**: Code snippets, tables, links, embedded content
+- **Actionable Items**: Next steps and recommended actions
+- **Confidence Indicators**: Clear indication of certainty level
+- **Source Attribution**: Links to original documents and resources

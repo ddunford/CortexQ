@@ -1,0 +1,125 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Development Workflow & Best Practices
+
+## Task Implementation Process
+
+### 1. Task Planning
+- Reference the comprehensive task breakdown in [TASK_LIST.md](mdc:docs/TASK_LIST.md)
+- Follow the phase-based development approach defined in [PRD.md](mdc:docs/PRD.md)
+- Ensure each task aligns with the service architecture outlined in [service-architecture.mdc](mdc:.cursor/rules/service-architecture.mdc)
+
+### 2. Service Development Guidelines
+- Each service should be implemented as a separate, containerized microservice
+- Follow the directory structure: `/services/{category}/{service-name}/`
+- Implement proper error handling, logging, and monitoring for all services
+- Use consistent API patterns and response formats across services
+
+### 3. Branch and Commit Strategy
+- Create feature branches from main: `feature/{service-name}/{task-description}`
+- Use conventional commits: `feat(service): add functionality` or `fix(service): resolve issue`
+- Include reference to task number in commits: `feat(ingestion): add PDF parser (#task-123)`
+- Ensure all commits pass CI/CD pipeline before merging
+
+### 4. Code Quality Requirements
+- Follow the development standards defined in [development-standards.mdc](mdc:.cursor/rules/development-standards.mdc)
+- Implement minimum 80% test coverage for all new code
+- Use TypeScript/Python type hints for better code safety
+- Run linting and formatting tools before committing
+- Document all public APIs and complex business logic
+
+### 5. Testing Strategy
+- **Unit Tests**: Test individual functions and classes in isolation
+- **Integration Tests**: Test service interactions and API endpoints
+- **E2E Tests**: Test complete user workflows and agent behaviors
+- **Performance Tests**: Validate response times and scalability requirements
+
+### 6. Review Process
+- All code must be reviewed by at least one team member
+- Security-sensitive changes require security team review
+- Performance-critical changes require performance review
+- Database changes require DBA review
+
+## Workflow Implementation Patterns
+
+### Agent Workflow Development
+When implementing agent workflows as defined in [workflow-patterns.mdc](mdc:.cursor/rules/workflow-patterns.mdc):
+
+1. **Create Workflow Interface**: Define standard workflow contract
+2. **Implement Classification Logic**: Use confidence scoring for routing decisions
+3. **Build Specialized Handlers**: Separate handlers for bugs, features, training
+4. **Add Fallback Mechanisms**: Human handoff for low-confidence scenarios
+5. **Implement Response Formatting**: Consistent output structure with rich media
+
+### RAG Implementation Pattern
+For RAG-related services:
+
+1. **Embedding Generation**: Use configured LLM provider (Ollama/OpenAI)
+2. **Vector Search**: Implement similarity search with configurable thresholds
+3. **Context Management**: Maintain conversation state and history
+4. **Response Generation**: Stream responses with confidence indicators
+5. **Caching Strategy**: Cache embeddings and frequent query results
+
+### Security Implementation
+For all services, especially those handling sensitive data:
+
+1. **Authentication**: Integrate with centralized auth service
+2. **Authorization**: Check permissions using RBAC system
+3. **Data Encryption**: Encrypt sensitive data at rest and in transit
+4. **Audit Logging**: Log all data access and modifications
+5. **Input Validation**: Sanitize and validate all user inputs
+
+## Deployment Workflow
+
+### Local Development
+1. Use Docker Compose for local service orchestration
+2. Implement hot-reloading for faster development cycles
+3. Use environment variables for configuration
+4. Set up local debugging with proper logging levels
+
+### CI/CD Pipeline
+1. **Build Stage**: Containerize services and run security scans
+2. **Test Stage**: Execute unit, integration, and security tests
+3. **Deploy Stage**: Deploy to staging environment for testing
+4. **Production**: Deploy with blue-green strategy for zero downtime
+
+### Monitoring and Observability
+- Implement health checks for all services
+- Use structured logging with correlation IDs
+- Set up distributed tracing for request flows
+- Create service-specific metrics and alerts
+- Monitor business metrics and user satisfaction
+
+## Emergency Procedures
+
+### Incident Response
+1. **Detection**: Monitor alerts and system health dashboards
+2. **Assessment**: Evaluate impact and determine severity level
+3. **Response**: Follow runbooks for common issues
+4. **Communication**: Update status page and notify stakeholders
+5. **Resolution**: Fix issue and document lessons learned
+
+### Rollback Strategy
+- Maintain ability to rollback to previous stable version
+- Use feature flags to disable problematic features
+- Keep database migration rollback scripts ready
+- Document rollback procedures for each service
+
+## Documentation Standards
+
+### Code Documentation
+- Document all public APIs using OpenAPI/Swagger
+- Include inline comments for complex business logic
+- Maintain README files for each service
+- Document configuration options and environment variables
+
+### Architecture Documentation
+- Update architecture decision records (ADRs) for major changes
+- Maintain service dependency maps
+- Document data flow and integration patterns
+- Keep deployment and troubleshooting guides current
+
+This workflow ensures consistent, high-quality development while maintaining the security, scalability, and reliability requirements of the enterprise RAG system.

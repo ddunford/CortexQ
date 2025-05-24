@@ -1,0 +1,95 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Project Setup & Initial Structure
+
+## Current State
+The project currently contains only documentation and Cursor Rules. The next step is to implement the foundational project structure as outlined in [TASK_LIST.md](mdc:docs/TASK_LIST.md).
+
+## Immediate Next Steps (Phase 1.1)
+
+### 1. Create Project Directory Structure
+```bash
+# Core service directories
+mkdir -p services/ingestion/{file-service,crawler-service,api-service}
+mkdir -p services/search/{vector-service,schema-service,hybrid-service}
+mkdir -p services/query/{classification-service,rag-service,agent-service}
+mkdir -p services/ui/{chat-api,admin-service,bot-service}
+mkdir -p services/infrastructure/{auth-service,audit-service,config-service}
+
+# Configuration and deployment
+mkdir -p config/{local,staging,production}
+mkdir -p deployments/{docker,kubernetes}
+mkdir -p scripts/{setup,deploy,backup}
+
+# Documentation and tests
+mkdir -p docs/{api,architecture,deployment}
+mkdir -p tests/{unit,integration,e2e}
+```
+
+### 2. Initialize Root Project Files
+Create these essential files in the project root:
+- `docker-compose.yml` - Local development orchestration
+- `requirements.txt` or `package.json` - Dependencies
+- `.env.example` - Environment variables template
+- `.gitignore` - Version control exclusions
+- `Makefile` - Common development commands
+- `README.md` - Project overview and setup instructions
+
+### 3. Container Configuration
+Each service directory should contain:
+- `Dockerfile` - Container definition
+- `requirements.txt` or `package.json` - Service dependencies
+- `config.yaml` - Service-specific configuration
+- `README.md` - Service documentation
+
+### 4. Development Environment Setup
+- Configure Python virtual environment or Node.js workspace
+- Set up code quality tools (black, flake8, eslint, prettier)
+- Initialize git hooks for pre-commit checks
+- Create development database containers (PostgreSQL, Redis)
+
+## Service Implementation Priority
+
+### Start Here (Most Critical):
+1. **File Ingestion Service** - Basic file upload and storage
+2. **Vector Index Service** - Core RAG functionality
+3. **Chat API Service** - Basic user interface
+4. **Configuration Service** - Centralized settings
+
+### Service Templates
+Each new service should follow this structure:
+```
+services/{category}/{service-name}/
+├── src/
+│   ├── main.py (or index.js)
+│   ├── api/
+│   ├── models/
+│   └── utils/
+├── tests/
+├── config/
+├── Dockerfile
+├── requirements.txt
+└── README.md
+```
+
+## Technology Stack Decisions
+Based on the PRD requirements, implement using:
+- **Backend**: Python (FastAPI) or Node.js (Express)
+- **Database**: PostgreSQL with pgvector extension
+- **Cache**: Redis for session and query caching
+- **Message Queue**: RabbitMQ or Apache Kafka
+- **Search**: OpenSearch or FAISS for vector operations
+- **LLM Integration**: Ollama (local) + OpenAI (fallback)
+
+## Quick Start Command
+```bash
+# Run this to begin Phase 1.1 setup
+make setup-project-structure
+make init-git-hooks
+make create-dev-environment
+```
+
+This rule provides concrete, actionable steps to move from the current documentation-only state to a working development environment.

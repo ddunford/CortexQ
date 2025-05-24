@@ -1,0 +1,49 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Development Standards & Guidelines
+
+## Code Organization
+- Use microservices architecture with clear service boundaries
+- Implement containerized services (Docker/Kubernetes ready)
+- Follow domain-driven design principles for service separation
+- Maintain clear APIs between services with proper versioning
+
+## Security Requirements
+- **Authentication**: Implement OAuth2, SAML, LDAP integration
+- **Encryption**: All data encrypted at rest and in transit
+- **Secrets Management**: Use HashiCorp Vault or equivalent
+- **Network Security**: Implement mTLS for internal service communication
+- **Access Control**: Role-Based Access Control (RBAC) with fine-grained permissions
+
+## Data Handling Standards
+- **Schema-Aware Processing**: Parse and validate structured data (JSON, XML, YAML)
+- **Versioning**: Implement change tracking and rollback support for all data
+- **Privacy Compliance**: GDPR/CCPA compliance with data retention policies
+- **Audit Logging**: Comprehensive logging of all data operations and user activities
+
+## API Design
+- RESTful APIs with proper HTTP status codes
+- Comprehensive API documentation (OpenAPI/Swagger)
+- Rate limiting and throttling for external APIs
+- Consistent error handling and response formats
+
+## Testing Standards
+- Unit tests with minimum 80% coverage
+- Integration tests for all service interactions
+- End-to-end tests for critical user workflows
+- Performance testing for scalability requirements
+
+## Observability
+- **Metrics**: Prometheus integration for all services
+- **Logging**: Structured logging with correlation IDs
+- **Tracing**: Distributed tracing for request flows
+- **Monitoring**: Grafana dashboards for operational metrics
+
+## Technology Constraints
+- **LLM Integration**: Support both Ollama and OpenAI with fallback mechanisms
+- **Vector Databases**: FAISS, OpenSearch, or pgvector
+- **Message Queues**: For async processing of ingestion tasks
+- **Caching**: Redis for session management and query caching
