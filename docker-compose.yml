@@ -1,0 +1,118 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_DB: rag_searcher
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/setup/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d rag_searcher"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # File Ingestion Service
+  file-service:
+    build: ./services/ingestion/file-service
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgresql://admin:password@postgres:5432/rag_searcher
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./services/ingestion/file-service:/app
+      - file_storage:/app/uploads
+
+  # Vector Index Service
+  vector-service:
+    build: ./services/search/vector-service
+    ports:
+      - "8002:8002"
+    environment:
+      - DATABASE_URL=postgresql://admin:password@postgres:5432/rag_searcher
+      - REDIS_URL=redis://redis:6379
+      - EMBEDDING_PROVIDER=mock
+      - OPENAI_API_KEY=your_openai_key_here
+      - OLLAMA_BASE_URL=http://localhost:11434
+      - FAISS_INDEX_PATH=/app/vector_index
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./services/search/vector-service:/app
+      - vector_index:/app/vector_index
+
+  # Chat API Service
+  chat-api:
+    build: ./services/ui/chat-api
+    ports:
+      - "8003:8003"
+    environment:
+      - DATABASE_URL=postgresql://admin:password@postgres:5432/rag_searcher
+      - REDIS_URL=redis://redis:6379
+      - VECTOR_SERVICE_URL=http://vector-service:8002
+      - FILE_SERVICE_URL=http://file-service:8001
+      - CHAT_API_PORT=8003
+      - DEBUG=true
+      - LOG_LEVEL=debug
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:8080,http://localhost:3001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./services/ui/chat-api:/app
+
+  # Web UI
+  web-ui:
+    build: ./services/ui/web-app
+    ports:
+      - "8080:80"
+    depends_on:
+      - chat-api
+      - file-service
+      - vector-service
+
+  # Admin Dashboard
+  admin-dashboard:
+    build: ./services/ui/admin-dashboard
+    ports:
+      - "8090:80"
+    depends_on:
+      - chat-api
+      - file-service
+      - vector-service
+
+volumes:
+  postgres_data:
+  redis_data:
+  file_storage:
+  vector_index: 
