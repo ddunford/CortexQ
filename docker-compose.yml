@@ -84,10 +84,10 @@ services:
       - LOG_LEVEL=debug
       - CORS_ORIGINS=http://localhost:3000,http://localhost:8080,http://localhost:3001
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - postgres
+      - redis
+      - vector-service
+      - file-service
     volumes:
       - ./services/ui/chat-api:/app
 
@@ -110,6 +110,19 @@ services:
       - chat-api
       - file-service
       - vector-service
+
+  classification-service:
+    build: ./services/query/classification-service
+    ports:
+      - "8004:8004"
+    environment:
+      - DATABASE_URL=postgresql://admin:password@postgres:5432/rag_searcher
+      - REDIS_URL=redis://redis:6379
+      - VECTOR_SERVICE_URL=http://vector-service:8002
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    depends_on:
+      - postgres
+      - redis
 
 volumes:
   postgres_data:
