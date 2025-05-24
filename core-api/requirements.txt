@@ -79,4 +79,12 @@ beautifulsoup4>=4.12.0
 
 # Workflow and agent dependencies
 openai>=1.3.0
-anthropic>=0.7.0 
+anthropic>=0.7.0
+
+# Web crawler dependencies
+aiohttp>=3.9.0
+robotparser>=1.0.0
+lxml>=4.9.0
+
+# Schema parser dependencies
+xmltodict>=0.13.0 
