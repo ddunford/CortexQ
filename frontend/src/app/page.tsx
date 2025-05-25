@@ -1,98 +1,126 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { MessageCircle, Upload, User, Settings } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { 
+  Building2, 
+  Globe, 
+  Plus,
+  Menu,
+  X,
+  User,
+  LogOut,
+  Settings,
+  Bell,
+  Search,
+  ChevronDown
+} from 'lucide-react';
+import Button from '../components/ui/Button';
+import Input from '../components/ui/Input';
+import Card from '../components/ui/Card';
+import OrganizationDashboard from '../components/organization/OrganizationDashboard';
+import DomainCreationWizard from '../components/domains/DomainCreationWizard';
+import DomainWorkspace from '../components/workspace/DomainWorkspace';
+import { User as UserType, Organization, Domain } from '../types';
+import { apiClient } from '../utils/api';
 
-interface Message {
-  id: string;
-  text: string;
-  isUser: boolean;
-  timestamp: Date;
+type ViewType = 'organization' | 'domain-workspace' | 'create-domain';
+
+interface AppState {
+  currentView: ViewType;
+  selectedDomain?: Domain;
+  user?: UserType;
+  organization?: Organization;
+  domains: Domain[];
+  sidebarOpen: boolean;
+  loading: boolean;
 }
 
 export default function HomePage() {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [inputMessage, setInputMessage] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [token, setToken] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [state, setState] = useState<AppState>({
+    currentView: 'organization',
+    domains: [],
+    sidebarOpen: true,
+    loading: false,
+  });
 
   useEffect(() => {
-    // Check for existing token
-    const savedToken = localStorage.getItem('rag_token');
-    if (savedToken) {
-      setToken(savedToken);
+    const token = localStorage.getItem('rag_token');
+    if (token) {
+      apiClient.setToken(token);
       setIsAuthenticated(true);
+      loadUserData();
     }
   }, []);
 
-  const sendMessage = async () => {
-    if (!inputMessage.trim() || !token) return;
-
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      text: inputMessage,
-      isUser: true,
-      timestamp: new Date()
-    };
-
-    setMessages(prev => [...prev, userMessage]);
-    setInputMessage('');
-    setLoading(true);
-
+  const loadUserData = async () => {
+    setState(prev => ({ ...prev, loading: true }));
     try {
-      const response = await fetch('http://localhost:8001/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          message: inputMessage,
-          domain: 'general'
-        })
-      });
+      const userResponse = await apiClient.getCurrentUser();
+      if (userResponse.success) {
+        const user = userResponse.data;
+        setState(prev => ({ ...prev, user }));
 
-      const data = await response.json();
+        // Load organizations - get the first one or create one
+        const orgsResponse = await apiClient.getOrganizations();
+        if (orgsResponse.success && orgsResponse.data.length > 0) {
+          const organization = orgsResponse.data[0];
+          setState(prev => ({ ...prev, organization }));
 
-      const botMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        text: data.message || 'Sorry, I encountered an error.',
-        isUser: false,
-        timestamp: new Date()
-      };
-
-      setMessages(prev => [...prev, botMessage]);
+          // Load domains
+          const domainsResponse = await apiClient.getDomains(organization.id);
+          if (domainsResponse.success) {
+            setState(prev => ({ ...prev, domains: domainsResponse.data }));
+          }
+        } else {
+          // Create a real organization via API
+          console.log('No organization found, creating demo organization...');
+          try {
+            // Generate a unique slug to avoid conflicts
+            const timestamp = Date.now();
+            const createOrgResponse = await apiClient.createOrganization({
+              name: 'My Organization',
+              slug: `my-org-${timestamp}`,
+              description: 'My organization workspace',
+              size_category: 'small',
+              subscription_tier: 'basic',
+            });
+            
+            if (createOrgResponse.success) {
+              const organization = createOrgResponse.data;
+              setState(prev => ({ ...prev, organization }));
+              
+              // Load domains for the new organization
+              const domainsResponse = await apiClient.getDomains(organization.id);
+              if (domainsResponse.success) {
+                setState(prev => ({ ...prev, domains: domainsResponse.data }));
+              }
+            } else {
+              console.error('Failed to create organization:', createOrgResponse);
+              // Set a minimal state so the UI doesn't break
+              setState(prev => ({ ...prev, organization: null, domains: [] }));
+            }
+          } catch (error) {
+            console.error('Error creating organization:', error);
+            // Set a minimal state so the UI doesn't break
+            setState(prev => ({ ...prev, organization: null, domains: [] }));
+          }
+        }
+      }
     } catch (error) {
-      console.error('Error sending message:', error);
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        text: 'Sorry, I could not process your request.',
-        isUser: false,
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      console.error('Failed to load user data:', error);
     } finally {
-      setLoading(false);
+      setState(prev => ({ ...prev, loading: false }));
     }
   };
 
-  const login = async (username: string, password: string) => {
+  const login = async (email: string, password: string) => {
     try {
-      const response = await fetch('http://localhost:8001/auth/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ username, password })
-      });
-
-      const data = await response.json();
-
-      if (data.access_token) {
-        setToken(data.access_token);
+      const response = await apiClient.login(email, password);
+      if (response.success) {
+        apiClient.setToken(response.data.access_token);
         setIsAuthenticated(true);
-        localStorage.setItem('rag_token', data.access_token);
+        loadUserData();
       }
     } catch (error) {
       console.error('Login error:', error);
@@ -100,169 +128,355 @@ export default function HomePage() {
   };
 
   const logout = () => {
-    setToken(null);
+    apiClient.clearToken();
     setIsAuthenticated(false);
-    localStorage.removeItem('rag_token');
-    setMessages([]);
+    setState({
+      currentView: 'organization',
+      domains: [],
+      sidebarOpen: true,
+      loading: false,
+    });
+  };
+
+  const handleCreateDomain = () => {
+    console.log('Create Domain button clicked');
+    setState(prev => ({ ...prev, currentView: 'create-domain' }));
+  };
+
+  const handleDomainCreated = (domain: Domain) => {
+    setState(prev => ({
+      ...prev,
+      domains: [...prev.domains, domain],
+      currentView: 'domain-workspace',
+      selectedDomain: domain,
+    }));
+  };
+
+  const handleSelectDomain = (domain: Domain) => {
+    setState(prev => ({
+      ...prev,
+      currentView: 'domain-workspace',
+      selectedDomain: domain,
+    }));
+  };
+
+  const handleBackToOrganization = () => {
+    setState(prev => ({
+      ...prev,
+      currentView: 'organization',
+      selectedDomain: undefined,
+    }));
   };
 
   if (!isAuthenticated) {
     return <LoginForm onLogin={login} />;
   }
 
-  return (
-    <div className="min-h-screen bg-gray-100">
-      {/* Header */}
-      <header className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center py-4">
-            <div className="flex items-center">
-              <MessageCircle className="h-8 w-8 text-blue-600 mr-2" />
-              <h1 className="text-2xl font-bold text-gray-900">Enterprise RAG System</h1>
-            </div>
-            <div className="flex items-center space-x-4">
-              <button className="p-2 text-gray-400 hover:text-gray-500">
-                <Upload className="h-5 w-5" />
-              </button>
-              <button className="p-2 text-gray-400 hover:text-gray-500">
-                <Settings className="h-5 w-5" />
-              </button>
-              <button 
-                onClick={logout}
-                className="p-2 text-gray-400 hover:text-gray-500"
-              >
-                <User className="h-5 w-5" />
-              </button>
-            </div>
-          </div>
-        </div>
-      </header>
+  if (state.loading && !state.user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
 
-      {/* Main Chat Interface */}
-      <div className="max-w-4xl mx-auto p-4">
-        <div className="bg-white rounded-lg shadow-lg h-96 flex flex-col">
-          {/* Messages */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {messages.length === 0 && (
-              <div className="text-center text-gray-500 py-8">
-                <MessageCircle className="h-12 w-12 mx-auto mb-4 text-gray-300" />
-                <p>Start a conversation with the RAG system</p>
+  const renderSidebar = () => (
+    <div className={`${state.sidebarOpen ? 'w-72' : 'w-20'} bg-white border-r border-gray-200 transition-all duration-300 flex flex-col shadow-sm`}>
+      {/* Logo */}
+      <div className="p-6 border-b border-gray-100">
+        <div className="flex items-center">
+          <div className="h-10 w-10 bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl flex items-center justify-center">
+            <Building2 className="h-6 w-6 text-white" />
+          </div>
+          {state.sidebarOpen && (
+            <div className="ml-3">
+              <h1 className="text-xl font-bold text-gray-900">Enterprise RAG</h1>
+              <p className="text-sm text-gray-500">{state.organization?.name}</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Navigation */}
+      <nav className="flex-1 p-4">
+        <div className="space-y-1">
+          {/* Organization Dashboard */}
+          <button
+            onClick={handleBackToOrganization}
+            className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 group ${
+              state.currentView === 'organization'
+                ? 'bg-blue-50 text-blue-700 shadow-sm border border-blue-100'
+                : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+            }`}
+          >
+            <Building2 className="h-5 w-5 flex-shrink-0" />
+            {state.sidebarOpen && (
+              <div className="ml-3 text-left">
+                <p className="text-sm font-medium">Organization</p>
+                <p className="text-xs text-gray-500">Dashboard & Settings</p>
               </div>
             )}
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`flex ${message.isUser ? 'justify-end' : 'justify-start'}`}
-              >
-                <div
-                  className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                    message.isUser
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-200 text-gray-900'
-                  }`}
+          </button>
+
+          {/* Domains Section */}
+          {state.sidebarOpen && (
+            <div className="pt-4">
+              <div className="flex items-center justify-between px-4 py-2">
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Domains</h3>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleCreateDomain}
+                  className="h-6 w-6 p-0"
                 >
-                  <p className="text-sm">{message.text}</p>
-                  <p className="text-xs mt-1 opacity-70">
-                    {message.timestamp.toLocaleTimeString()}
-                  </p>
-                </div>
+                  <Plus className="h-4 w-4" />
+                </Button>
               </div>
-            ))}
-            {loading && (
-              <div className="flex justify-start">
-                <div className="bg-gray-200 text-gray-900 max-w-xs lg:max-w-md px-4 py-2 rounded-lg">
-                  <p className="text-sm">Thinking...</p>
-                </div>
+              
+              <div className="space-y-1">
+                {state.domains.map((domain) => (
+                  <button
+                    key={domain.id}
+                    onClick={() => handleSelectDomain(domain)}
+                    className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 group ${
+                      state.selectedDomain?.id === domain.id
+                        ? 'bg-blue-50 text-blue-700 shadow-sm border border-blue-100'
+                        : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                    }`}
+                  >
+                    <div className={`h-8 w-8 rounded-lg flex items-center justify-center ${domain.color || 'bg-gray-100'}`}>
+                      <Globe className="h-4 w-4" />
+                    </div>
+                    <div className="ml-3 text-left">
+                      <p className="text-sm font-medium">{domain.display_name || domain.name}</p>
+                                              <p className="text-xs text-gray-500 capitalize">{domain.is_active ? 'active' : 'inactive'}</p>
+                    </div>
+                  </button>
+                ))}
+                
+                {state.domains.length === 0 && (
+                  <div className="px-4 py-8 text-center">
+                    <Globe className="h-8 w-8 text-gray-400 mx-auto mb-2" />
+                    <p className="text-sm text-gray-500 mb-2">No domains yet</p>
+                    <Button size="sm" onClick={handleCreateDomain}>
+                      Create Domain
+                    </Button>
+                  </div>
+                )}
               </div>
+            </div>
+          )}
+        </div>
+      </nav>
+
+      {/* User Menu */}
+      <div className="p-4 border-t border-gray-100">
+        <div className="flex items-center">
+          <div className="h-8 w-8 bg-gray-300 rounded-full flex items-center justify-center">
+            <User className="h-4 w-4 text-gray-600" />
+          </div>
+          {state.sidebarOpen && (
+            <div className="ml-3 flex-1">
+              <p className="text-sm font-medium text-gray-900">{state.user?.email}</p>
+              <p className="text-xs text-gray-500 capitalize">{state.user?.role}</p>
+            </div>
+          )}
+          {state.sidebarOpen && (
+            <button
+              onClick={logout}
+              className="p-1 text-gray-400 hover:text-gray-600"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderTopBar = () => (
+    <div className="bg-white border-b border-gray-200 px-6 py-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-4">
+          <button
+            onClick={() => setState(prev => ({ ...prev, sidebarOpen: !prev.sidebarOpen }))}
+            className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
+          
+          <div className="flex items-center space-x-2 text-sm text-gray-500">
+            <span>{state.organization?.name}</span>
+            {state.selectedDomain && (
+              <>
+                <span>/</span>
+                <span className="text-gray-900 font-medium">{state.selectedDomain.display_name || state.selectedDomain.name}</span>
+              </>
             )}
           </div>
-
-          {/* Input */}
-          <div className="border-t p-4">
-            <div className="flex space-x-2">
-              <input
-                type="text"
-                value={inputMessage}
-                onChange={(e) => setInputMessage(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                placeholder="Ask me anything..."
-                className="flex-1 border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                disabled={loading}
-              />
-              <button
-                onClick={sendMessage}
-                disabled={loading || !inputMessage.trim()}
-                className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Send
-              </button>
-            </div>
-          </div>
         </div>
+
+        <div className="flex items-center space-x-4">
+          <div className="relative">
+            <Search className="h-4 w-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search..."
+              className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+          
+          <button className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 relative">
+            <Bell className="h-5 w-5" />
+            <span className="absolute top-1 right-1 h-2 w-2 bg-red-500 rounded-full"></span>
+          </button>
+          
+          <button className="flex items-center space-x-2 p-2 text-gray-700 hover:bg-gray-100 rounded-lg">
+            <div className="h-6 w-6 bg-gray-300 rounded-full flex items-center justify-center">
+              <User className="h-3 w-3 text-gray-600" />
+            </div>
+            <ChevronDown className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderMainContent = () => {
+    if (!state.organization) return null;
+
+    switch (state.currentView) {
+      case 'organization':
+        return (
+          <OrganizationDashboard
+            organization={state.organization}
+            onCreateDomain={handleCreateDomain}
+            onManageTeam={() => {}}
+            onViewBilling={() => {}}
+          />
+        );
+      
+      case 'create-domain':
+        return (
+          <DomainCreationWizard
+            organizationId={state.organization.id}
+            onComplete={handleDomainCreated}
+            onCancel={handleBackToOrganization}
+          />
+        );
+      
+      case 'domain-workspace':
+        return state.selectedDomain ? (
+          <DomainWorkspace
+            domain={state.selectedDomain}
+            onEditDomain={() => {}}
+            onDeleteDomain={() => {}}
+          />
+        ) : null;
+      
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex">
+      {/* Sidebar */}
+      {renderSidebar()}
+
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col">
+        {/* Top Bar */}
+        {renderTopBar()}
+
+        {/* Content Area */}
+        <main className="flex-1 p-6 overflow-auto">
+          {renderMainContent()}
+        </main>
       </div>
     </div>
   );
 }
 
-function LoginForm({ onLogin }: { onLogin: (username: string, password: string) => void }) {
-  const [username, setUsername] = useState('');
+function LoginForm({ onLogin }: { onLogin: (email: string, password: string) => void }) {
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [isRegister, setIsRegister] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onLogin(username, password);
+    setLoading(true);
+    try {
+      await onLogin(email, password);
+    } catch (error) {
+      console.error('Authentication error:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-      <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-6">
-        <div className="text-center mb-6">
-          <MessageCircle className="h-12 w-12 text-blue-600 mx-auto mb-4" />
-          <h2 className="text-2xl font-bold text-gray-900">Enterprise RAG System</h2>
-          <p className="text-gray-600">Sign in to continue</p>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Username
-            </label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Enter your username"
-              required
-            />
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+      <Card className="w-full max-w-md">
+        <div className="p-8">
+          <div className="text-center mb-8">
+            <div className="h-12 w-12 bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl flex items-center justify-center mx-auto mb-4">
+              <Building2 className="h-6 w-6 text-white" />
+            </div>
+            <h1 className="text-2xl font-bold text-gray-900">Enterprise RAG</h1>
+            <p className="text-gray-600">AI-Powered Knowledge Management</p>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Password
-            </label>
-            <input
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <Input
+              label="Email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="Enter your email"
+              autoComplete="email"
+              fullWidth
+              required
+            />
+            
+            <Input
+              label="Password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="Enter your password"
+              autoComplete="current-password"
+              fullWidth
               required
             />
+
+            <Button
+              type="submit"
+              loading={loading}
+              className="w-full"
+            >
+              {isRegister ? 'Create Account' : 'Sign In'}
+            </Button>
+          </form>
+
+          <div className="mt-6 text-center">
+            <button
+              onClick={() => setIsRegister(!isRegister)}
+              className="text-sm text-blue-600 hover:text-blue-500"
+            >
+              {isRegister ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
+            </button>
           </div>
 
-          <button
-            type="submit"
-            className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            Sign In
-          </button>
-        </form>
-
-        <div className="mt-4 text-center text-sm text-gray-600">
-          Default credentials: admin / admin123
+          <div className="mt-8 pt-6 border-t border-gray-200">
+            <div className="text-center text-sm text-gray-500">
+              <p>Demo Credentials:</p>
+              <p className="font-mono">test@example.com / test123</p>
+            </div>
+          </div>
         </div>
-      </div>
+      </Card>
     </div>
   );
 } 

@@ -47,6 +47,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - JWT_SECRET=your-super-secret-jwt-key-change-in-production
       - DEBUG=true
+      - OLLAMA_BASE_URL=http://ollama:11434
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,16 +64,77 @@ services:
       timeout: 10s
       retries: 3
 
-  # Frontend (Next.js)
+  # Ollama for local LLM
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - rag-network
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend (Next.js) - Professional UI with Hot Reloading
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     ports:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8001
+      - NODE_ENV=development
     depends_on:
+      - core-api
+    networks:
+      - rag-network
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/package.json:/app/package.json
+      - ./frontend/package-lock.json:/app/package-lock.json
+      - ./frontend/next.config.js:/app/next.config.js
+      - ./frontend/tailwind.config.js:/app/tailwind.config.js
+      - ./frontend/postcss.config.js:/app/postcss.config.js
+      - /app/node_modules
+
+  # Bot Integration Service
+  bot-service:
+    build:
+      context: ./services/ui/bot-service
+      dockerfile: Dockerfile
+    ports:
+      - "8012:8012"
+    environment:
+      - RAG_SERVICE_URL=http://core-api:8000
+      - CHAT_API_URL=http://core-api:8000
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
+      - TEAMS_APP_ID=${TEAMS_APP_ID:-}
+      - TEAMS_APP_PASSWORD=${TEAMS_APP_PASSWORD:-}
+    depends_on:
+      - core-api
+    networks:
+      - rag-network
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf
+      - ./config/ssl:/etc/nginx/ssl
+    depends_on:
+      - frontend
       - core-api
     networks:
       - rag-network
@@ -81,6 +143,7 @@ volumes:
   postgres_data:
   redis_data:
   file_storage:
+  ollama_data:
 
 networks:
   rag-network:

@@ -6,11 +6,13 @@ Integrated from all microservices into unified architecture
 import os
 import uuid
 import json
+import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
@@ -19,6 +21,10 @@ from sqlalchemy.orm import Session, sessionmaker
 import redis
 from sentence_transformers import SentenceTransformer
 import uvicorn
+import asyncio
+import logging
+from pathlib import Path
+import aiofiles
 
 # Import our enhanced modules
 from auth_utils import (
@@ -28,6 +34,15 @@ from classifiers import classifier, ClassificationResult
 from rag_processor import (
     initialize_rag_processor, rag_processor, RAGRequest, RAGResponse, RAGMode
 )
+# Import crawler directly to avoid dependency issues
+try:
+    from ingestion.crawler import WebCrawler, CrawlScheduler
+    CRAWLER_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Web crawler not available: {e}")
+    CRAWLER_AVAILABLE = False
+    WebCrawler = None
+    CrawlScheduler = None
 
 # ============================================================================
 # CONFIGURATION
@@ -62,7 +77,8 @@ session_manager = SessionManager(redis_client)
 # ============================================================================
 
 class LoginRequest(BaseModel):
-    username: str
+    username: Optional[str] = None
+    email: Optional[str] = None
     password: str
 
 class LoginResponse(BaseModel):
@@ -127,6 +143,111 @@ class RoleCreate(BaseModel):
 class PermissionCheck(BaseModel):
     permission: str
     resource: Optional[str] = None
+
+class WebScrapingRequest(BaseModel):
+    urls: List[str]
+    domain: str = "general"
+    max_depth: int = 2
+    max_pages: int = 100
+    delay: float = 1.0
+    allowed_domains: Optional[List[str]] = None
+    exclude_patterns: Optional[List[str]] = None
+
+class WebScrapingResponse(BaseModel):
+    crawl_id: str
+    status: str
+    urls_queued: int
+    estimated_completion: str
+
+# ============================================================================
+# ORGANIZATION MODELS
+# ============================================================================
+
+class OrganizationCreate(BaseModel):
+    name: str
+    slug: str
+    description: Optional[str] = None
+    logo_url: Optional[str] = None
+    website: Optional[str] = None
+    industry: Optional[str] = None
+    size_category: str = "small"  # startup, small, medium, large, enterprise
+    subscription_tier: str = "basic"  # basic, professional, enterprise
+
+class OrganizationResponse(BaseModel):
+    id: str
+    name: str
+    slug: str
+    description: Optional[str]
+    logo_url: Optional[str]
+    website: Optional[str]
+    industry: Optional[str]
+    size_category: str
+    subscription_tier: str
+    max_users: int
+    max_storage_gb: int
+    max_domains: int
+    is_active: bool
+    created_at: str
+    member_count: int
+    domain_count: int
+
+class OrganizationMemberResponse(BaseModel):
+    id: str
+    user_id: str
+    username: str
+    email: str
+    full_name: Optional[str]
+    role: str
+    permissions: List[str]
+    joined_at: str
+    last_active: Optional[str]
+    is_active: bool
+
+class DomainTemplateResponse(BaseModel):
+    id: str
+    name: str
+    display_name: str
+    description: Optional[str]
+    icon: Optional[str]
+    color: Optional[str]
+    category: str
+    suggested_settings: Dict
+
+class OrganizationDomainCreate(BaseModel):
+    domain_name: str
+    display_name: str
+    description: Optional[str] = None
+    icon: str = "globe"
+    color: str = "blue"
+    settings: Dict = {}
+    template_id: Optional[str] = None
+
+class OrganizationDomainResponse(BaseModel):
+    id: str
+    organization_id: str
+    domain_name: str
+    display_name: str
+    description: Optional[str]
+    icon: str
+    color: str
+    settings: Dict
+    created_by: Optional[str]
+    is_active: bool
+    created_at: str
+
+class InvitationCreate(BaseModel):
+    email: str
+    role: str = "user"
+
+class InvitationResponse(BaseModel):
+    id: str
+    organization_id: str
+    email: str
+    role: str
+    invited_by: str
+    invitation_token: str
+    expires_at: str
+    created_at: str
 
 # ============================================================================
 # DEPENDENCY INJECTION
@@ -241,11 +362,27 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"❌ Failed to initialize RAG processor: {e}")
     
+    # Start background processor
+    try:
+        from background_processor import start_background_processor
+        asyncio.create_task(start_background_processor())
+        print("✅ Background processor started")
+    except ImportError:
+        print("⚠️ Background processor not available")
+    
     print("🎉 Enhanced Core API started successfully!")
     
     yield
     
     print("🛑 Shutting down Enhanced Core API...")
+    
+    # Stop background processor
+    try:
+        from background_processor import stop_background_processor
+        stop_background_processor()
+        print("✅ Background processor stopped")
+    except ImportError:
+        pass
 
 # ============================================================================
 # APPLICATION SETUP
@@ -330,11 +467,21 @@ async def status_check(
 async def login(request: LoginRequest, db: Session = Depends(get_db)):
     """Enhanced login with RBAC and audit logging"""
     try:
-        # Get user from database
-        result = db.execute(
-            text("SELECT id, username, email, full_name, password_hash, is_active FROM users WHERE username = :username"),
-            {"username": request.username}
-        )
+        # Validate input
+        if not request.username and not request.email:
+            raise HTTPException(status_code=400, detail="Username or email is required")
+        
+        # Get user from database (support both username and email login)
+        if request.email:
+            result = db.execute(
+                text("SELECT id, username, email, full_name, password_hash, is_active FROM users WHERE email = :email"),
+                {"email": request.email}
+            )
+        else:
+            result = db.execute(
+                text("SELECT id, username, email, full_name, password_hash, is_active FROM users WHERE username = :username"),
+                {"username": request.username}
+            )
         user = result.fetchone()
         
         if not user or not user.is_active:
@@ -751,7 +898,23 @@ async def chat(
             for row in context_result.fetchall()
         ]
         
-        # Create RAG request
+        # Get user's organization for multi-tenant isolation
+        org_result = db.execute(
+            text("""
+                SELECT om.organization_id
+                FROM organization_members om
+                WHERE om.user_id = :user_id AND om.is_active = true
+                LIMIT 1
+            """),
+            {"user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not org_result:
+            raise HTTPException(status_code=403, detail="User not associated with any organization")
+        
+        organization_id = str(org_result.organization_id)
+
+        # Create RAG request with organization context
         rag_request = RAGRequest(
             query=request.message,
             domain=request.domain,
@@ -760,7 +923,8 @@ async def chat(
             confidence_threshold=request.confidence_threshold,
             context={"recent_messages": recent_messages},
             user_id=current_user["id"],
-            session_id=session_id
+            session_id=session_id,
+            organization_id=organization_id
         )
         
         # Process with RAG
@@ -858,7 +1022,7 @@ async def upload_file(
     current_user: dict = Depends(require_permission("files:write")),
     db: Session = Depends(get_db)
 ):
-    """Enhanced file upload with domain support and processing"""
+    """Enhanced file upload with domain support, multi-tenant isolation, and processing"""
     try:
         # Check domain access
         if not PermissionManager.has_domain_access(db, current_user["id"], domain):
@@ -866,6 +1030,24 @@ async def upload_file(
                 status_code=403,
                 detail=f"Access denied to domain: {domain}"
             )
+        
+        # Get user's organization for multi-tenant isolation
+        org_result = db.execute(
+            text("""
+                SELECT om.organization_id, o.slug
+                FROM organization_members om
+                JOIN organizations o ON om.organization_id = o.id
+                WHERE om.user_id = :user_id AND om.is_active = true
+                LIMIT 1
+            """),
+            {"user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not org_result:
+            raise HTTPException(status_code=403, detail="User not associated with any organization")
+        
+        organization_id = str(org_result.organization_id)
+        org_slug = org_result.slug
         
         # Validate file type
         allowed_types = {
@@ -885,64 +1067,122 @@ async def upload_file(
         
         # Read file content
         content = await file.read()
-        file_hash = str(hash(content))  # Simple hash for deduplication
+        file_size = len(content)
         
-        # Create file record
+        # Validate file size (50MB limit)
+        max_size = 50 * 1024 * 1024  # 50MB
+        if file_size > max_size:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large. Maximum size: 50MB"
+            )
+        
+        # Generate secure file hash for deduplication
+        file_hash = hashlib.sha256(content).hexdigest()
+        
+        # Check for duplicate files within the organization
+        existing_file = db.execute(
+            text("""
+                SELECT id, original_filename FROM files 
+                WHERE file_hash = :file_hash AND organization_id = :org_id
+            """),
+            {"file_hash": file_hash, "org_id": organization_id}
+        ).fetchone()
+        
+        if existing_file:
+            return FileUploadResponse(
+                id=str(existing_file.id),
+                filename=existing_file.original_filename,
+                status="duplicate",
+                domain=domain,
+                processing_status="completed"
+            )
+        
+        # Create multi-tenant file storage structure
         file_id = str(uuid.uuid4())
+        file_extension = Path(file.filename).suffix.lower()
+        safe_filename = f"{file_id}{file_extension}"
+        
+        # Multi-tenant storage path: /uploads/{org_slug}/{domain}/{file_id}.ext
+        storage_base = Path(os.getenv("FILE_STORAGE_PATH", "./uploads"))
+        org_storage_path = storage_base / org_slug / domain
+        org_storage_path.mkdir(parents=True, exist_ok=True)
+        
+        file_path = org_storage_path / safe_filename
+        
+        # Save file to disk with proper isolation
+        async with aiofiles.open(file_path, 'wb') as f:
+            await f.write(content)
+        
+        # Create file record with organization and file path
         db.execute(
             text("""
                 INSERT INTO files (
                     id, filename, original_filename, content_type, size_bytes,
-                    file_hash, domain, uploaded_by, created_at
+                    file_hash, file_path, domain, organization_id, uploaded_by, created_at
                 ) VALUES (
                     :id, :filename, :original_filename, :content_type, :size_bytes,
-                    :file_hash, :domain, :uploaded_by, :created_at
+                    :file_hash, :file_path, :domain, :organization_id, :uploaded_by, :created_at
                 )
             """),
             {
                 "id": file_id,
-                "filename": f"{file_id}_{file.filename}",
+                "filename": safe_filename,
                 "original_filename": file.filename,
                 "content_type": file.content_type,
-                "size_bytes": len(content),
+                "size_bytes": file_size,
                 "file_hash": file_hash,
+                "file_path": str(file_path),
                 "domain": domain,
+                "organization_id": organization_id,
                 "uploaded_by": current_user["id"],
                 "created_at": datetime.utcnow()
             }
         )
         
-        # Create processing job
+        # Create processing job with organization context
         job_id = str(uuid.uuid4())
         db.execute(
             text("""
-                INSERT INTO file_processing_jobs (id, file_id, job_type, created_at)
-                VALUES (:id, :file_id, :job_type, :created_at)
+                INSERT INTO file_processing_jobs (
+                    id, file_id, job_type, organization_id, domain, created_at
+                ) VALUES (
+                    :id, :file_id, :job_type, :organization_id, :domain, :created_at
+                )
             """),
             {
                 "id": job_id,
                 "file_id": file_id,
                 "job_type": "embedding_generation",
+                "organization_id": organization_id,
+                "domain": domain,
                 "created_at": datetime.utcnow()
             }
         )
         
         db.commit()
         
-        # Log file upload
+        # Log file upload with organization context
         AuditLogger.log_event(
             db, "file_upload", current_user["id"], "files", "create",
-            f"Uploaded file {file.filename}",
+            f"Uploaded file {file.filename} to domain {domain}",
             {
                 "file_id": file_id,
                 "filename": file.filename,
-                "size_bytes": len(content),
-                "domain": domain
+                "size_bytes": file_size,
+                "domain": domain,
+                "organization_id": organization_id,
+                "file_path": str(file_path)
             }
         )
         
-        # TODO: Trigger async processing
-        # For now, mark as pending
+        # Trigger async processing
+        try:
+            from background_processor import background_processor
+            if background_processor:
+                logger.info(f"File {file_id} queued for processing in org {org_slug}")
+        except ImportError:
+            logger.warning("Background processor not available")
         
         return FileUploadResponse(
             id=file_id,
@@ -956,6 +1196,12 @@ async def upload_file(
         raise
     except Exception as e:
         db.rollback()
+        # Clean up file if it was created
+        try:
+            if 'file_path' in locals() and Path(file_path).exists():
+                Path(file_path).unlink()
+        except:
+            pass
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
 
 @app.get("/files")
@@ -964,54 +1210,242 @@ async def list_files(
     current_user: dict = Depends(require_permission("files:read")),
     db: Session = Depends(get_db)
 ):
-    """List uploaded files"""
-    # Build query based on domain access
-    accessible_domains = current_user["domains"]
+    """List uploaded files with multi-tenant isolation"""
+    try:
+        # Get user's organization
+        org_result = db.execute(
+            text("""
+                SELECT om.organization_id
+                FROM organization_members om
+                WHERE om.user_id = :user_id AND om.is_active = true
+                LIMIT 1
+            """),
+            {"user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not org_result:
+            raise HTTPException(status_code=403, detail="User not associated with any organization")
+        
+        organization_id = str(org_result.organization_id)
+        
+        # Build query based on domain access within organization
+        accessible_domains = current_user["domains"]
+        
+        if domain and domain not in accessible_domains:
+            raise HTTPException(status_code=403, detail=f"Access denied to domain: {domain}")
+        
+        where_conditions = ["f.organization_id = :organization_id"]
+        params = {"organization_id": organization_id}
+        
+        if domain:
+            where_conditions.append("f.domain = :domain")
+            params["domain"] = domain
+        else:
+            # Filter by accessible domains within the organization
+            if accessible_domains:
+                domain_placeholders = ",".join([f":domain_{i}" for i in range(len(accessible_domains))])
+                where_conditions.append(f"f.domain IN ({domain_placeholders})")
+                for i, d in enumerate(accessible_domains):
+                    params[f"domain_{i}"] = d
+        
+        where_clause = " AND ".join(where_conditions)
+        
+        result = db.execute(
+            text(f"""
+                SELECT f.id, f.filename, f.original_filename, f.content_type, f.size_bytes,
+                       f.domain, f.processed, f.processing_status, f.processing_error, f.created_at,
+                       u.username as uploaded_by_username
+                FROM files f
+                LEFT JOIN users u ON f.uploaded_by = u.id
+                WHERE {where_clause}
+                ORDER BY f.created_at DESC
+                LIMIT 100
+            """),
+            params
+        )
+        
+        return [
+            {
+                "id": str(row.id),
+                "filename": row.filename,
+                "original_filename": row.original_filename,
+                "content_type": row.content_type,
+                "size_bytes": row.size_bytes,
+                "domain": row.domain,
+                "processed": row.processed,
+                "processing_status": row.processing_status,
+                "processing_error": row.processing_error,
+                "uploaded_by": row.uploaded_by_username,
+                "created_at": row.created_at.isoformat()
+            }
+            for row in result.fetchall()
+        ]
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list files: {str(e)}")
+
+# ============================================================================
+# WEB SCRAPING ENDPOINTS
+# ============================================================================
+
+@app.post("/web-scraping/start", response_model=WebScrapingResponse)
+async def start_web_scraping(
+    request: WebScrapingRequest,
+    current_user: dict = Depends(require_permission("files:write")),
+    db: Session = Depends(get_db)
+):
+    """Start web scraping for specified URLs with multi-tenant isolation"""
+    if not CRAWLER_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Web crawler service not available")
     
-    if domain and domain not in accessible_domains:
-        raise HTTPException(status_code=403, detail=f"Access denied to domain: {domain}")
-    
-    where_conditions = []
-    params = {}
-    
-    if domain:
-        where_conditions.append("domain = :domain")
-        params["domain"] = domain
-    else:
-        # Filter by accessible domains
-        domain_placeholders = ",".join([f":domain_{i}" for i in range(len(accessible_domains))])
-        where_conditions.append(f"domain IN ({domain_placeholders})")
-        for i, d in enumerate(accessible_domains):
-            params[f"domain_{i}"] = d
-    
-    where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
-    
-    result = db.execute(
-        text(f"""
-            SELECT id, filename, original_filename, content_type, size_bytes,
-                   domain, processed, processing_status, created_at
-            FROM files 
-            WHERE {where_clause}
-            ORDER BY created_at DESC
-            LIMIT 100
-        """),
-        params
-    )
-    
-    return [
-        {
-            "id": str(row.id),
-            "filename": row.filename,
-            "original_filename": row.original_filename,
-            "content_type": row.content_type,
-            "size_bytes": row.size_bytes,
-            "domain": row.domain,
-            "processed": row.processed,
-            "processing_status": row.processing_status,
-            "created_at": row.created_at.isoformat()
+    try:
+        # Get user's organization for multi-tenant isolation
+        org_result = db.execute(
+            text("""
+                SELECT om.organization_id, o.slug
+                FROM organization_members om
+                JOIN organizations o ON om.organization_id = o.id
+                WHERE om.user_id = :user_id AND om.is_active = true
+                LIMIT 1
+            """),
+            {"user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not org_result:
+            raise HTTPException(status_code=403, detail="User not associated with any organization")
+        
+        organization_id = str(org_result.organization_id)
+        org_slug = org_result.slug
+        
+        # Check domain access
+        if not PermissionManager.has_domain_access(db, current_user["id"], request.domain):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access denied to domain: {request.domain}"
+            )
+        
+        # Generate crawl ID
+        crawl_id = str(uuid.uuid4())
+        
+        # Set up allowed domains if not provided
+        if not request.allowed_domains:
+            request.allowed_domains = []
+            for url in request.urls:
+                parsed = urlparse(url)
+                if parsed.netloc and parsed.netloc not in request.allowed_domains:
+                    request.allowed_domains.append(parsed.netloc)
+        
+        # Initialize crawler scheduler
+        scheduler = CrawlScheduler()
+        
+        # Create crawl configuration with organization context
+        crawl_config = {
+            "crawl_id": crawl_id,
+            "urls": request.urls,
+            "domain": request.domain,
+            "organization_id": organization_id,
+            "org_slug": org_slug,
+            "max_depth": request.max_depth,
+            "max_pages": request.max_pages,
+            "delay": request.delay,
+            "allowed_domains": request.allowed_domains,
+            "exclude_patterns": request.exclude_patterns or [],
+            "user_id": current_user["id"],
+            "created_at": datetime.utcnow().isoformat()
         }
-        for row in result.fetchall()
-    ]
+        
+        # Schedule the crawl
+        await scheduler.schedule_crawl(crawl_config, db)
+        
+        # Estimate completion time (rough calculation)
+        estimated_pages = min(request.max_pages, len(request.urls) * (request.max_depth ** 2))
+        estimated_seconds = estimated_pages * request.delay
+        estimated_completion = (datetime.utcnow() + timedelta(seconds=estimated_seconds)).isoformat()
+        
+        # Log the action with organization context
+        AuditLogger.log_event(
+            db, "web_scraping_started", current_user["id"], "crawl", "create",
+            f"Started web scraping for {len(request.urls)} URLs in domain {request.domain}",
+            {
+                "crawl_id": crawl_id,
+                "urls": request.urls,
+                "domain": request.domain,
+                "organization_id": organization_id,
+                "max_pages": request.max_pages,
+                "max_depth": request.max_depth
+            }
+        )
+        
+        return WebScrapingResponse(
+            crawl_id=crawl_id,
+            status="scheduled",
+            urls_queued=len(request.urls),
+            estimated_completion=estimated_completion
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start web scraping: {str(e)}")
+
+@app.get("/web-scraping/{crawl_id}/status")
+async def get_crawl_status(
+    crawl_id: str,
+    current_user: dict = Depends(require_permission("files:read")),
+    db: Session = Depends(get_db)
+):
+    """Get status of a web crawling job with multi-tenant isolation"""
+    try:
+        # Get user's organization
+        org_result = db.execute(
+            text("""
+                SELECT om.organization_id
+                FROM organization_members om
+                WHERE om.user_id = :user_id AND om.is_active = true
+                LIMIT 1
+            """),
+            {"user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not org_result:
+            raise HTTPException(status_code=403, detail="User not associated with any organization")
+        
+        organization_id = str(org_result.organization_id)
+        
+        # Query crawl job with organization isolation
+        result = db.execute(
+            text("""
+                SELECT crawl_id, status, pages_crawled, total_pages, started_at, completed_at, error_message
+                FROM crawl_jobs
+                WHERE crawl_id = :crawl_id AND user_id = :user_id AND organization_id = :organization_id
+            """),
+            {
+                "crawl_id": crawl_id, 
+                "user_id": current_user["id"],
+                "organization_id": organization_id
+            }
+        ).fetchone()
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Crawl job not found")
+        
+        return {
+            "crawl_id": result.crawl_id,
+            "status": result.status,
+            "pages_crawled": result.pages_crawled or 0,
+            "total_pages": result.total_pages or 0,
+            "progress_percentage": (result.pages_crawled / max(result.total_pages, 1)) * 100 if result.total_pages else 0,
+            "started_at": result.started_at.isoformat() if result.started_at else None,
+            "completed_at": result.completed_at.isoformat() if result.completed_at else None,
+            "error_message": result.error_message
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get crawl status: {str(e)}")
 
 # ============================================================================
 # ANALYTICS & REPORTING ENDPOINTS
@@ -1024,8 +1458,29 @@ async def get_classification_analytics(
     current_user: dict = Depends(require_permission("analytics:read")),
     db: Session = Depends(get_db)
 ):
-    """Get intent classification analytics"""
-    return await classifier.get_classification_analytics(db, domain, days)
+    """Get intent classification analytics with organization isolation"""
+    try:
+        # Get user's organization for multi-tenant isolation
+        org_result = db.execute(
+            text("""
+                SELECT om.organization_id
+                FROM organization_members om
+                WHERE om.user_id = :user_id AND om.is_active = true
+                LIMIT 1
+            """),
+            {"user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not org_result:
+            raise HTTPException(status_code=403, detail="User not associated with any organization")
+        
+        organization_id = str(org_result.organization_id)
+        
+        return await classifier.get_classification_analytics(db, organization_id, domain, days)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get classification analytics: {str(e)}")
 
 @app.get("/analytics/rag")
 async def get_rag_analytics(
@@ -1070,6 +1525,370 @@ async def get_audit_analytics(
             "count": row.count,
             "unique_users": row.unique_users
         }
+        for row in result.fetchall()
+    ]
+
+# ============================================================================
+# ORGANIZATION MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@app.get("/organizations", response_model=List[OrganizationResponse])
+async def list_organizations(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List organizations the user has access to"""
+    result = db.execute(
+        text("""
+            SELECT DISTINCT o.id, o.name, o.slug, o.description, o.logo_url, o.website,
+                   o.industry, o.size_category, o.subscription_tier, o.max_users,
+                   o.max_storage_gb, o.max_domains, o.is_active, o.created_at,
+                   (SELECT COUNT(*) FROM organization_members om WHERE om.organization_id = o.id AND om.is_active = true) as member_count,
+                   (SELECT COUNT(*) FROM organization_domains od WHERE od.organization_id = o.id AND od.is_active = true) as domain_count
+            FROM organizations o
+            JOIN organization_members om ON o.id = om.organization_id
+            WHERE om.user_id = :user_id AND om.is_active = true AND o.is_active = true
+            ORDER BY o.name
+        """),
+        {"user_id": current_user["id"]}
+    )
+    
+    return [
+        OrganizationResponse(
+            id=str(row.id),
+            name=row.name,
+            slug=row.slug,
+            description=row.description,
+            logo_url=row.logo_url,
+            website=row.website,
+            industry=row.industry,
+            size_category=row.size_category,
+            subscription_tier=row.subscription_tier,
+            max_users=row.max_users,
+            max_storage_gb=row.max_storage_gb,
+            max_domains=row.max_domains,
+            is_active=row.is_active,
+            created_at=row.created_at.isoformat(),
+            member_count=row.member_count,
+            domain_count=row.domain_count
+        )
+        for row in result.fetchall()
+    ]
+
+@app.post("/organizations", response_model=OrganizationResponse)
+async def create_organization(
+    org_data: OrganizationCreate,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new organization"""
+    try:
+        # Check if slug is available
+        existing = db.execute(
+            text("SELECT id FROM organizations WHERE slug = :slug"),
+            {"slug": org_data.slug}
+        ).fetchone()
+        
+        if existing:
+            raise HTTPException(status_code=400, detail="Organization slug already exists")
+        
+        # Set limits based on subscription tier
+        tier_limits = {
+            "basic": {"max_users": 10, "max_storage_gb": 10, "max_domains": 3},
+            "professional": {"max_users": 50, "max_storage_gb": 100, "max_domains": 10},
+            "enterprise": {"max_users": 1000, "max_storage_gb": 1000, "max_domains": 50}
+        }
+        limits = tier_limits.get(org_data.subscription_tier, tier_limits["basic"])
+        
+        # Create organization
+        org_id = str(uuid.uuid4())
+        db.execute(
+            text("""
+                INSERT INTO organizations (
+                    id, name, slug, description, logo_url, website, industry,
+                    size_category, subscription_tier, max_users, max_storage_gb, max_domains,
+                    created_at
+                ) VALUES (
+                    :id, :name, :slug, :description, :logo_url, :website, :industry,
+                    :size_category, :subscription_tier, :max_users, :max_storage_gb, :max_domains,
+                    :created_at
+                )
+            """),
+            {
+                "id": org_id,
+                "name": org_data.name,
+                "slug": org_data.slug,
+                "description": org_data.description,
+                "logo_url": org_data.logo_url,
+                "website": org_data.website,
+                "industry": org_data.industry,
+                "size_category": org_data.size_category,
+                "subscription_tier": org_data.subscription_tier,
+                "max_users": limits["max_users"],
+                "max_storage_gb": limits["max_storage_gb"],
+                "max_domains": limits["max_domains"],
+                "created_at": datetime.utcnow()
+            }
+        )
+        
+        # Add creator as owner
+        db.execute(
+            text("""
+                INSERT INTO organization_members (organization_id, user_id, role, joined_at)
+                VALUES (:org_id, :user_id, 'owner', :joined_at)
+            """),
+            {
+                "org_id": org_id,
+                "user_id": current_user["id"],
+                "joined_at": datetime.utcnow()
+            }
+        )
+        
+        # Create default general domain
+        domain_id = str(uuid.uuid4())
+        db.execute(
+            text("""
+                INSERT INTO organization_domains (
+                    id, organization_id, domain_name, display_name, description,
+                    icon, color, created_by, created_at
+                ) VALUES (
+                    :id, :org_id, 'general', 'General', 'General knowledge and documentation',
+                    'globe', 'blue', :created_by, :created_at
+                )
+            """),
+            {
+                "id": domain_id,
+                "org_id": org_id,
+                "created_by": current_user["id"],
+                "created_at": datetime.utcnow()
+            }
+        )
+        
+        db.commit()
+        
+        # Log organization creation
+        AuditLogger.log_event(
+            db, "organization_creation", current_user["id"], "organizations", "create",
+            f"Created organization {org_data.name}",
+            {"organization_id": org_id, "slug": org_data.slug}
+        )
+        
+        return OrganizationResponse(
+            id=org_id,
+            name=org_data.name,
+            slug=org_data.slug,
+            description=org_data.description,
+            logo_url=org_data.logo_url,
+            website=org_data.website,
+            industry=org_data.industry,
+            size_category=org_data.size_category,
+            subscription_tier=org_data.subscription_tier,
+            max_users=limits["max_users"],
+            max_storage_gb=limits["max_storage_gb"],
+            max_domains=limits["max_domains"],
+            is_active=True,
+            created_at=datetime.utcnow().isoformat(),
+            member_count=1,
+            domain_count=1
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to create organization: {str(e)}")
+
+@app.get("/organizations/{org_id}/domains", response_model=List[OrganizationDomainResponse])
+async def list_organization_domains(
+    org_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List domains for an organization"""
+    # Check if user has access to this organization
+    member = db.execute(
+        text("""
+            SELECT role FROM organization_members 
+            WHERE organization_id = :org_id AND user_id = :user_id AND is_active = true
+        """),
+        {"org_id": org_id, "user_id": current_user["id"]}
+    ).fetchone()
+    
+    if not member:
+        raise HTTPException(status_code=403, detail="Access denied to organization")
+    
+    result = db.execute(
+        text("""
+            SELECT id, organization_id, domain_name, display_name, description,
+                   icon, color, settings, created_by, is_active, created_at
+            FROM organization_domains
+            WHERE organization_id = :org_id AND is_active = true
+            ORDER BY domain_name
+        """),
+        {"org_id": org_id}
+    )
+    
+    return [
+        OrganizationDomainResponse(
+            id=str(row.id),
+            organization_id=str(row.organization_id),
+            domain_name=row.domain_name,
+            display_name=row.display_name,
+            description=row.description,
+            icon=row.icon,
+            color=row.color,
+            settings=row.settings or {},
+            created_by=str(row.created_by) if row.created_by else None,
+            is_active=row.is_active,
+            created_at=row.created_at.isoformat()
+        )
+        for row in result.fetchall()
+    ]
+
+@app.post("/organizations/{org_id}/domains", response_model=OrganizationDomainResponse)
+async def create_organization_domain(
+    org_id: str,
+    domain_data: OrganizationDomainCreate,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new domain for an organization"""
+    try:
+        # Check if user has admin access to this organization
+        member = db.execute(
+            text("""
+                SELECT role FROM organization_members 
+                WHERE organization_id = :org_id AND user_id = :user_id AND is_active = true
+            """),
+            {"org_id": org_id, "user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not member or member.role not in ['owner', 'admin']:
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        # Check domain limits
+        org_info = db.execute(
+            text("SELECT max_domains FROM organizations WHERE id = :org_id"),
+            {"org_id": org_id}
+        ).fetchone()
+        
+        current_domains = db.execute(
+            text("SELECT COUNT(*) as count FROM organization_domains WHERE organization_id = :org_id AND is_active = true"),
+            {"org_id": org_id}
+        ).fetchone()
+        
+        if current_domains.count >= org_info.max_domains:
+            raise HTTPException(status_code=400, detail="Domain limit reached for this organization")
+        
+        # Check if domain name is unique within organization
+        existing = db.execute(
+            text("SELECT id FROM organization_domains WHERE organization_id = :org_id AND domain_name = :domain_name"),
+            {"org_id": org_id, "domain_name": domain_data.domain_name}
+        ).fetchone()
+        
+        if existing:
+            raise HTTPException(status_code=400, detail="Domain name already exists in this organization")
+        
+        # Get template settings if template_id provided
+        settings = domain_data.settings
+        if domain_data.template_id:
+            template = db.execute(
+                text("SELECT suggested_settings FROM domain_templates WHERE id = :template_id"),
+                {"template_id": domain_data.template_id}
+            ).fetchone()
+            if template:
+                settings.update(template.suggested_settings or {})
+        
+        # Create domain
+        domain_id = str(uuid.uuid4())
+        db.execute(
+            text("""
+                INSERT INTO organization_domains (
+                    id, organization_id, domain_name, display_name, description,
+                    icon, color, settings, created_by, created_at
+                ) VALUES (
+                    :id, :org_id, :domain_name, :display_name, :description,
+                    :icon, :color, :settings, :created_by, :created_at
+                )
+            """),
+            {
+                "id": domain_id,
+                "org_id": org_id,
+                "domain_name": domain_data.domain_name,
+                "display_name": domain_data.display_name,
+                "description": domain_data.description,
+                "icon": domain_data.icon,
+                "color": domain_data.color,
+                "settings": json.dumps(settings),
+                "created_by": current_user["id"],
+                "created_at": datetime.utcnow()
+            }
+        )
+        
+        db.commit()
+        
+        # Log domain creation
+        AuditLogger.log_event(
+            db, "domain_creation", current_user["id"], "organization_domains", "create",
+            f"Created domain {domain_data.domain_name} in organization {org_id}",
+            {"domain_id": domain_id, "domain_name": domain_data.domain_name}
+        )
+        
+        return OrganizationDomainResponse(
+            id=domain_id,
+            organization_id=org_id,
+            domain_name=domain_data.domain_name,
+            display_name=domain_data.display_name,
+            description=domain_data.description,
+            icon=domain_data.icon,
+            color=domain_data.color,
+            settings=settings,
+            created_by=current_user["id"],
+            is_active=True,
+            created_at=datetime.utcnow().isoformat()
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to create domain: {str(e)}")
+
+@app.get("/domain-templates", response_model=List[DomainTemplateResponse])
+async def list_domain_templates(
+    category: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List available domain templates"""
+    where_clause = "WHERE is_active = true"
+    params = {}
+    
+    if category:
+        where_clause += " AND category = :category"
+        params["category"] = category
+    
+    result = db.execute(
+        text(f"""
+            SELECT id, name, display_name, description, icon, color, category, suggested_settings
+            FROM domain_templates
+            {where_clause}
+            ORDER BY category, display_name
+        """),
+        params
+    )
+    
+    return [
+        DomainTemplateResponse(
+            id=str(row.id),
+            name=row.name,
+            display_name=row.display_name,
+            description=row.description,
+            icon=row.icon,
+            color=row.color,
+            category=row.category,
+            suggested_settings=row.suggested_settings or {}
+        )
         for row in result.fetchall()
     ]
 

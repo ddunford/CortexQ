@@ -14,6 +14,7 @@ import robots
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import re
+import json
 
 
 class WebCrawler:
@@ -44,7 +45,9 @@ class WebCrawler:
         start_url: str, 
         allowed_domains: List[str],
         exclude_patterns: List[str] = None,
-        db: Session = None
+        db: Session = None,
+        organization_id: str = None,
+        domain: str = "general"
     ) -> List[Dict]:
         """
         Crawl a website starting from start_url
@@ -54,6 +57,8 @@ class WebCrawler:
             allowed_domains: List of allowed domains to crawl
             exclude_patterns: URL patterns to exclude
             db: Database session for storing results
+            organization_id: Organization ID for multi-tenant isolation
+            domain: Domain context for the crawled content
             
         Returns:
             List of crawled page data
@@ -82,9 +87,9 @@ class WebCrawler:
                     crawled_pages.append(page_data)
                     self.visited_urls.add(current_url)
                     
-                    # Store in database if provided
-                    if db:
-                        await self._store_crawled_page(db, page_data)
+                    # Store in database if provided with organization context
+                    if db and organization_id:
+                        await self._store_crawled_page(db, page_data, organization_id, domain)
                     
                     # Extract and queue new URLs
                     if depth < self.max_depth:
@@ -251,7 +256,7 @@ class WebCrawler:
         except:
             return True
     
-    async def _store_crawled_page(self, db: Session, page_data: Dict):
+    async def _store_crawled_page(self, db: Session, page_data: Dict, organization_id: str, domain: str):
         """Store crawled page in database"""
         try:
             # Check if page already exists (by URL hash)
@@ -269,7 +274,8 @@ class WebCrawler:
                         UPDATE crawled_pages 
                         SET content = :content, metadata = :metadata, 
                             last_crawled = :crawled_at, content_hash = :content_hash,
-                            word_count = :word_count
+                            word_count = :word_count, organization_id = :organization_id,
+                            domain = :domain
                         WHERE url_hash = :url_hash
                     """),
                     {
@@ -278,6 +284,8 @@ class WebCrawler:
                         "crawled_at": page_data['crawled_at'],
                         "content_hash": page_data['content_hash'],
                         "word_count": page_data['word_count'],
+                        "organization_id": organization_id,
+                        "domain": domain,
                         "url_hash": url_hash
                     }
                 )
@@ -287,10 +295,10 @@ class WebCrawler:
                     text("""
                         INSERT INTO crawled_pages 
                         (id, url, url_hash, title, content, metadata, 
-                         first_crawled, last_crawled, content_hash, word_count)
+                         first_crawled, last_crawled, content_hash, word_count, organization_id, domain)
                         VALUES 
                         (gen_random_uuid(), :url, :url_hash, :title, :content, :metadata,
-                         :crawled_at, :crawled_at, :content_hash, :word_count)
+                         :crawled_at, :crawled_at, :content_hash, :word_count, :organization_id, :domain)
                     """),
                     {
                         "url": page_data['url'],
@@ -300,7 +308,9 @@ class WebCrawler:
                         "metadata": str(page_data['metadata']),
                         "crawled_at": page_data['crawled_at'],
                         "content_hash": page_data['content_hash'],
-                        "word_count": page_data['word_count']
+                        "word_count": page_data['word_count'],
+                        "organization_id": organization_id,
+                        "domain": domain
                     }
                 )
             
@@ -332,7 +342,10 @@ class CrawlScheduler:
         Returns:
             Crawl job ID
         """
-        crawl_id = hashlib.md5(f"{crawl_config['url']}_{datetime.utcnow()}".encode()).hexdigest()
+        crawl_id = crawl_config.get('crawl_id', hashlib.md5(f"{crawl_config['urls'][0]}_{datetime.utcnow()}".encode()).hexdigest())
+        
+        # Store crawl job in database with organization context
+        await self._store_crawl_job(db, crawl_id, crawl_config)
         
         # Store crawl config in database
         await self._store_crawl_config(db, crawl_id, crawl_config)
@@ -359,7 +372,9 @@ class CrawlScheduler:
                         start_url=config['url'],
                         allowed_domains=config['allowed_domains'],
                         exclude_patterns=config.get('exclude_patterns', []),
-                        db=db
+                        db=db,
+                        organization_id=config.get('organization_id'),
+                        domain=config.get('domain', "general")
                     )
                     
                     # Update crawl status
@@ -380,16 +395,17 @@ class CrawlScheduler:
             db.execute(
                 text("""
                     INSERT INTO crawl_configs 
-                    (id, url, config, status, created_at, last_crawl)
+                    (id, url, config, status, organization_id, created_at, last_crawl)
                     VALUES 
-                    (:id, :url, :config, 'active', :created_at, NULL)
+                    (:id, :url, :config, 'active', :organization_id, :created_at, NULL)
                     ON CONFLICT (id) DO UPDATE SET
-                    config = :config, status = 'active'
+                    config = :config, status = 'active', organization_id = :organization_id
                 """),
                 {
                     "id": crawl_id,
-                    "url": config['url'],
+                    "url": config['urls'][0] if config.get('urls') else config.get('url', ''),
                     "config": str(config),
+                    "organization_id": config.get('organization_id'),
                     "created_at": datetime.utcnow()
                 }
             )
@@ -398,9 +414,65 @@ class CrawlScheduler:
             print(f"Error storing crawl config: {e}")
             db.rollback()
     
+    async def _store_crawl_job(self, db: Session, crawl_id: str, config: Dict):
+        """Store crawl job in database with organization context"""
+        try:
+            db.execute(
+                text("""
+                    INSERT INTO crawl_jobs 
+                    (crawl_id, user_id, organization_id, domain, urls, allowed_domains, 
+                     exclude_patterns, max_depth, max_pages, delay, status, created_at)
+                    VALUES 
+                    (:crawl_id, :user_id, :organization_id, :domain, :urls, :allowed_domains,
+                     :exclude_patterns, :max_depth, :max_pages, :delay, 'pending', :created_at)
+                    ON CONFLICT (crawl_id) DO UPDATE SET
+                    status = 'pending', organization_id = :organization_id
+                """),
+                {
+                    "crawl_id": crawl_id,
+                    "user_id": config.get('user_id'),
+                    "organization_id": config.get('organization_id'),
+                    "domain": config.get('domain', 'general'),
+                    "urls": json.dumps(config.get('urls', [])),
+                    "allowed_domains": json.dumps(config.get('allowed_domains', [])),
+                    "exclude_patterns": json.dumps(config.get('exclude_patterns', [])),
+                    "max_depth": config.get('max_depth', 3),
+                    "max_pages": config.get('max_pages', 100),
+                    "delay": config.get('delay', 1.0),
+                    "created_at": datetime.utcnow()
+                }
+            )
+            db.commit()
+        except Exception as e:
+            print(f"Error storing crawl job: {e}")
+            db.rollback()
+    
     async def _update_crawl_status(self, db: Session, crawl_id: str, pages_crawled: int, timestamp: datetime):
         """Update crawl status in database"""
         try:
+            # Update crawl_jobs table
+            db.execute(
+                text("""
+                    UPDATE crawl_jobs 
+                    SET pages_crawled = :pages_crawled, 
+                        status = CASE 
+                            WHEN :pages_crawled > 0 THEN 'completed'
+                            ELSE 'running'
+                        END,
+                        completed_at = CASE 
+                            WHEN :pages_crawled > 0 THEN :timestamp
+                            ELSE NULL
+                        END
+                    WHERE crawl_id = :crawl_id
+                """),
+                {
+                    "crawl_id": crawl_id,
+                    "timestamp": timestamp,
+                    "pages_crawled": pages_crawled
+                }
+            )
+            
+            # Update crawl_configs table
             db.execute(
                 text("""
                     UPDATE crawl_configs 

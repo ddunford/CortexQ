@@ -58,6 +58,7 @@ class RAGRequest:
     context: Optional[Dict] = None
     user_id: Optional[str] = None
     session_id: Optional[str] = None
+    organization_id: Optional[str] = None
     force_refresh_cache: bool = False
 
 
@@ -578,10 +579,14 @@ class EnhancedRAGProcessor:
             return cached_response
         
         try:
-            # Step 1: Intent Classification
+            # Step 1: Intent Classification with organization context
+            if not request.organization_id:
+                raise ValueError("Organization ID is required for multi-tenant isolation")
+            
             classification_result = await classifier.classify_query(
                 query=request.query,
                 domain=request.domain,
+                organization_id=request.organization_id,
                 context=request.context,
                 db=db
             )
@@ -869,11 +874,11 @@ class EnhancedRAGProcessor:
                     INSERT INTO rag_executions (
                         id, query, domain, mode, intent, confidence, 
                         response_type, source_count, processing_time_ms, 
-                        user_id, session_id, created_at
+                        user_id, session_id, organization_id, created_at
                     ) VALUES (
                         :id, :query, :domain, :mode, :intent, :confidence,
                         :response_type, :source_count, :processing_time_ms,
-                        :user_id, :session_id, :created_at
+                        :user_id, :session_id, :organization_id, :created_at
                     )
                 """),
                 {
@@ -888,6 +893,7 @@ class EnhancedRAGProcessor:
                     "processing_time_ms": response.processing_time_ms,
                     "user_id": request.user_id,
                     "session_id": request.session_id,
+                    "organization_id": request.organization_id,
                     "created_at": datetime.utcnow()
                 }
             )

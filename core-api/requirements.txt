@@ -25,6 +25,7 @@ scikit-learn>=1.3.0
 
 # Vector search
 faiss-cpu>=1.7.0
+pgvector>=0.2.0
 
 # HTTP client for service communication
 httpx>=0.25.0
@@ -83,7 +84,6 @@ anthropic>=0.7.0
 
 # Web crawler dependencies
 aiohttp>=3.9.0
-robotparser>=1.0.0
 lxml>=4.9.0
 
 # Schema parser dependencies

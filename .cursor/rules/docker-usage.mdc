@@ -1,0 +1,200 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Docker Usage Guidelines
+
+## Docker-First Architecture
+This Enterprise RAG System is built with a **Docker-first approach** where all services run in containers for consistency, scalability, and deployment simplicity.
+
+## Core Docker Philosophy
+- **Everything runs in containers** - No local development dependencies except Docker
+- **Microservices architecture** - Each service has its own container and Dockerfile
+- **Development-production parity** - Same containers used in dev and production
+- **Infrastructure as code** - All configuration in [docker-compose.yml](mdc:docker-compose.yml)
+
+## Container Architecture
+
+### Core Services Stack
+The system uses a multi-container architecture defined in [docker-compose.yml](mdc:docker-compose.yml):
+
+#### Infrastructure Layer
+- **PostgreSQL with pgvector** (`pgvector/pgvector:pg15`) - Vector database for embeddings
+- **Redis** (`redis:7-alpine`) - Caching and session management
+- **Nginx** (`nginx:alpine`) - Reverse proxy and load balancer
+
+#### Application Layer
+- **Core API** (`core-api/`) - Consolidated backend service (Port 8001)
+- **Frontend** (`frontend/`) - Next.js professional UI (Port 3000)
+- **Bot Service** (`services/ui/bot-service/`) - Slack/Teams integration (Port 8012)
+
+#### AI/ML Layer
+- **Ollama** (`ollama/ollama:latest`) - Local LLM inference (Port 11434)
+
+### Network Architecture
+- **Custom bridge network** (`rag-network`) for service communication
+- **Service discovery** via container names (e.g., `postgres`, `redis`, `core-api`)
+- **Health checks** for all critical services
+
+## Dockerfile Standards
+
+### Multi-Stage Builds
+All Dockerfiles use multi-stage builds for optimization:
+
+```dockerfile
+# Example from frontend/Dockerfile
+FROM node:18-alpine AS deps     # Dependencies stage
+FROM node:18-alpine AS builder  # Build stage  
+FROM node:18-alpine AS runner   # Runtime stage
+```
+
+### Security Best Practices
+- **Non-root users** in production containers
+- **Minimal base images** (Alpine Linux preferred)
+- **Health checks** for service monitoring
+- **No secrets in images** - Use environment variables
+
+### Development vs Production
+- **Development**: Hot reload with volume mounts
+- **Production**: Optimized builds with minimal attack surface
+
+## Docker Compose Usage
+
+### Primary Commands (via Makefile)
+Use the [Makefile](mdc:Makefile) for all Docker operations:
+
+```bash
+make setup      # Initial environment setup
+make build      # Build all images
+make up         # Start all services
+make down       # Stop all services
+make logs       # View service logs
+make health     # Check service health
+make clean      # Clean up resources
+```
+
+### Service Management
+```bash
+make frontend   # Start frontend stack only
+make backend    # Start backend services only
+make services   # Start microservices only
+```
+
+### Development Workflow
+```bash
+make dev        # Development mode with hot reload
+make test       # Run containerized tests
+make lint       # Run containerized linting
+```
+
+## Volume Management
+
+### Persistent Data
+- **postgres_data** - Database persistence
+- **redis_data** - Cache persistence
+- **file_storage** - Uploaded files
+- **ollama_data** - LLM models
+
+### Development Volumes
+- **Source code mounts** for hot reload during development
+- **Node modules exclusion** to prevent conflicts
+
+## Environment Configuration
+
+### Environment Variables
+All configuration via environment variables in [.env](mdc:.env):
+- **Database connections** - PostgreSQL and Redis URLs
+- **API keys** - JWT secrets, external API keys
+- **Service URLs** - Inter-service communication
+- **Feature flags** - Debug mode, development settings
+
+### Service Discovery
+Services communicate using container names:
+```yaml
+DATABASE_URL=postgresql://admin:password@postgres:5432/rag_searcher
+REDIS_URL=redis://redis:6379
+OLLAMA_BASE_URL=http://ollama:11434
+```
+
+## Health Monitoring
+
+### Built-in Health Checks
+Every service includes health check endpoints:
+- **HTTP services** - `/health` endpoint
+- **Database** - `pg_isready` command
+- **Redis** - `redis-cli ping`
+- **Ollama** - `/api/tags` endpoint
+
+### Monitoring Commands
+```bash
+make status     # Container status and resource usage
+make health     # Health check all services
+make logs-api   # Specific service logs
+```
+
+## Development Guidelines
+
+### Local Development
+1. **Never install dependencies locally** - Use containers for everything
+2. **Use volume mounts** for hot reload during development
+3. **Environment parity** - Same containers in dev/staging/prod
+4. **Database migrations** via containerized commands
+
+### Adding New Services
+1. **Create Dockerfile** in service directory
+2. **Add to docker-compose.yml** with proper networking
+3. **Update Makefile** with service-specific commands
+4. **Include health checks** for monitoring
+
+### Debugging
+- **Container logs** - `make logs` or `docker compose logs [service]`
+- **Shell access** - `docker compose exec [service] /bin/sh`
+- **Network inspection** - `docker network inspect rag-network`
+
+## Production Deployment
+
+### Container Orchestration
+- **Kubernetes ready** - Dockerfiles optimized for K8s deployment
+- **Health checks** for liveness and readiness probes
+- **Resource limits** defined in compose files
+- **Secrets management** via environment variables
+
+### Scaling Strategy
+- **Horizontal scaling** - Multiple container instances
+- **Load balancing** via Nginx reverse proxy
+- **Database connection pooling** in application layer
+- **Stateless services** for easy scaling
+
+## Security Considerations
+
+### Container Security
+- **Non-root users** in production containers
+- **Minimal attack surface** with Alpine base images
+- **No secrets in images** - Runtime environment variables only
+- **Network isolation** via custom Docker networks
+
+### Data Protection
+- **Volume encryption** for sensitive data
+- **TLS termination** at Nginx proxy
+- **Database credentials** via environment variables
+- **API key management** through secure environment configuration
+
+## Troubleshooting
+
+### Common Issues
+- **Port conflicts** - Check `docker compose ps` for port mappings
+- **Volume permissions** - Ensure proper user/group ownership
+- **Network connectivity** - Verify service names in URLs
+- **Resource limits** - Monitor with `docker stats`
+
+### Debug Commands
+```bash
+docker compose ps                    # Service status
+docker compose logs [service]       # Service logs
+docker compose exec [service] sh    # Shell access
+docker network ls                   # Network inspection
+docker volume ls                    # Volume management
+```
+
+This Docker-first approach ensures consistent, scalable, and maintainable deployment across all environments while providing excellent developer experience with hot reload and easy service management.

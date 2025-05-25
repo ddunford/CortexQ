@@ -1,0 +1,407 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Database Migration & Schema Management Best Practices
+
+## Alembic Migration System
+
+This project uses **Alembic** for database schema management with a Docker-first approach. All database changes MUST go through the proper migration workflow.
+
+### Core Principles
+
+1. **Never modify the database directly** - All changes must be versioned migrations
+2. **Organization isolation is mandatory** - Every table must include `organization_id` with proper constraints
+3. **Migrations are immutable** - Once applied to production, never edit existing migrations
+4. **Docker-first deployment** - Migrations run automatically on container startup
+
+## File Structure
+
+```
+core-api/
+├── src/models.py              # SQLAlchemy models (source of truth)
+├── alembic.ini               # Alembic configuration
+├── alembic/
+│   ├── env.py               # Environment configuration
+│   └── versions/            # Generated migration files
+├── scripts/start.sh         # Docker startup with auto-migrations
+└── migrations-backup/       # Legacy SQL migrations (reference only)
+```
+
+## SQLAlchemy Models Standards
+
+### Model Definition Requirements
+
+All models in [core-api/src/models.py](mdc:core-api/src/models.py) must follow these patterns:
+
+#### 1. Organization Isolation (CRITICAL)
+```python
+class ExampleTable(Base):
+    __tablename__ = "example_table"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    # ... other columns
+    
+    # Required indexes for organization isolation
+    __table_args__ = (
+        Index('idx_example_table_organization_id', 'organization_id'),
+        Index('idx_example_table_org_created', 'organization_id', 'created_at'),
+    )
+```
+
+#### 2. Standard Column Patterns
+```python
+# Primary key (always UUID)
+id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+# Timestamps (always include both)
+created_at = Column(TIMESTAMP, default=func.now())
+updated_at = Column(TIMESTAMP, default=func.now(), onupdate=func.now())
+
+# Organization reference (required for multi-tenant tables)
+organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+
+# JSONB for flexible data
+metadata = Column(JSONB, default={})
+settings = Column(JSONB, default={})
+```
+
+#### 3. Required Indexes
+```python
+__table_args__ = (
+    # Organization isolation (mandatory)
+    Index('idx_table_organization_id', 'organization_id'),
+    
+    # Performance indexes
+    Index('idx_table_created_at', 'created_at'),
+    Index('idx_table_status', 'status'),
+    
+    # Composite indexes for common queries
+    Index('idx_table_org_status', 'organization_id', 'status'),
+    Index('idx_table_org_created', 'organization_id', 'created_at'),
+    
+    # Unique constraints
+    UniqueConstraint('organization_id', 'unique_field'),
+)
+```
+
+## Migration Workflow
+
+### 1. Creating New Migrations
+
+**Command**: `make db-migrate-create MSG="Description of change"`
+
+```bash
+# Example: Adding a new table
+make db-migrate-create MSG="Add user preferences table"
+
+# Example: Adding a column
+make db-migrate-create MSG="Add email_verified column to users"
+```
+
+### 2. Migration File Standards
+
+Generated migration files in `alembic/versions/` must follow these patterns:
+
+#### Organization Isolation Check
+```python
+def upgrade():
+    # Create table with organization_id
+    op.create_table('new_table',
+        sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column('organization_id', postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column('created_at', sa.TIMESTAMP(), nullable=True),
+        sa.ForeignKeyConstraint(['organization_id'], ['organizations.id'], ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id')
+    )
+    
+    # Always add organization index
+    op.create_index('idx_new_table_organization_id', 'new_table', ['organization_id'])
+```
+
+#### Adding Columns to Existing Tables
+```python
+def upgrade():
+    # Add column
+    op.add_column('existing_table', sa.Column('new_column', sa.String(255), nullable=True))
+    
+    # Add index if needed
+    op.create_index('idx_existing_table_new_column', 'existing_table', ['new_column'])
+
+def downgrade():
+    # Always provide rollback
+    op.drop_index('idx_existing_table_new_column', 'existing_table')
+    op.drop_column('existing_table', 'new_column')
+```
+
+### 3. Applying Migrations
+
+**Development**: `make db-migrate`
+**Production**: Automatic via Docker startup script
+
+### 4. Migration Status & Rollback
+
+```bash
+# Check current migration status
+make db-migrate-status
+
+# Rollback last migration (development only)
+make db-migrate-downgrade
+```
+
+## Docker Integration
+
+### Automatic Migration on Startup
+
+The [core-api/scripts/start.sh](mdc:core-api/scripts/start.sh) script handles:
+
+1. **Database connection waiting**
+2. **Fresh deployment detection**
+3. **pgvector extension creation**
+4. **Automatic migration application**
+5. **Application startup**
+
+### Environment Configuration
+
+Database connection configured in [core-api/alembic/env.py](mdc:core-api/alembic/env.py):
+
+```python
+# Uses DATABASE_URL environment variable
+database_url = os.getenv("DATABASE_URL", "postgresql://admin:password@postgres:5432/rag_searcher")
+```
+
+## Security & Multi-Tenant Requirements
+
+### 1. Organization Isolation (MANDATORY)
+
+Every table that stores user data MUST include:
+```sql
+organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE NOT NULL
+```
+
+### 2. Row Level Security (Future Enhancement)
+```sql
+-- Enable RLS on sensitive tables
+ALTER TABLE sensitive_table ENABLE ROW LEVEL SECURITY;
+
+-- Create policy for organization isolation
+CREATE POLICY org_isolation_policy ON sensitive_table
+    FOR ALL TO application_role
+    USING (organization_id = current_setting('app.current_organization_id')::UUID);
+```
+
+### 3. Foreign Key Constraints
+```python
+# Always use CASCADE for organization relationships
+organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+
+# Use RESTRICT for critical relationships
+user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+```
+
+## Performance Best Practices
+
+### 1. Index Strategy
+```python
+# Organization + timestamp for common queries
+Index('idx_table_org_created', 'organization_id', 'created_at')
+
+# Status filtering within organization
+Index('idx_table_org_status', 'organization_id', 'status')
+
+# Unique constraints scoped to organization
+UniqueConstraint('organization_id', 'unique_field')
+```
+
+### 2. JSONB Usage
+```python
+# Use JSONB for flexible data
+metadata = Column(JSONB, default={})
+
+# Add GIN indexes for JSONB queries
+Index('idx_table_metadata_gin', 'metadata', postgresql_using='gin')
+```
+
+### 3. Vector Columns (pgvector)
+```python
+# Vector embeddings with proper dimension
+embedding = Column(Vector(384))  # MiniLM dimension
+
+# Indexes for vector similarity search
+Index('idx_embeddings_org_vector', 'organization_id', 'embedding', postgresql_using='ivfflat')
+```
+
+## Data Migration Patterns
+
+### 1. Adding Organization Context to Existing Data
+```python
+def upgrade():
+    # Add organization_id column
+    op.add_column('existing_table', sa.Column('organization_id', postgresql.UUID(as_uuid=True), nullable=True))
+    
+    # Populate with default organization
+    op.execute("""
+        UPDATE existing_table 
+        SET organization_id = (SELECT id FROM organizations WHERE slug = 'default')
+        WHERE organization_id IS NULL
+    """)
+    
+    # Make it non-nullable
+    op.alter_column('existing_table', 'organization_id', nullable=False)
+    
+    # Add foreign key constraint
+    op.create_foreign_key('fk_existing_table_org', 'existing_table', 'organizations', ['organization_id'], ['id'], ondelete='CASCADE')
+```
+
+### 2. Data Transformation Migrations
+```python
+def upgrade():
+    # Use batch operations for large tables
+    with op.batch_alter_table('large_table') as batch_op:
+        batch_op.add_column(sa.Column('new_format_data', sa.JSONB()))
+    
+    # Transform data in chunks
+    connection = op.get_bind()
+    result = connection.execute("SELECT id, old_data FROM large_table")
+    
+    for row in result:
+        transformed_data = transform_function(row.old_data)
+        connection.execute(
+            "UPDATE large_table SET new_format_data = %s WHERE id = %s",
+            (transformed_data, row.id)
+        )
+```
+
+## Testing Migrations
+
+### 1. Migration Testing Requirements
+```python
+# Test both upgrade and downgrade
+def test_migration_upgrade():
+    # Apply migration
+    alembic_command.upgrade(alembic_config, "head")
+    
+    # Verify schema changes
+    assert table_exists("new_table")
+    assert column_exists("new_table", "organization_id")
+
+def test_migration_downgrade():
+    # Test rollback
+    alembic_command.downgrade(alembic_config, "-1")
+    
+    # Verify rollback worked
+    assert not table_exists("new_table")
+```
+
+### 2. Data Integrity Validation
+```python
+def validate_organization_isolation():
+    """Ensure all tables have proper organization isolation"""
+    tables_requiring_org_id = [
+        'files', 'embeddings', 'chat_sessions', 'chat_messages',
+        'classification_results', 'rag_executions', 'workflow_executions'
+    ]
+    
+    for table in tables_requiring_org_id:
+        assert column_exists(table, 'organization_id')
+        assert foreign_key_exists(table, 'organization_id', 'organizations', 'id')
+```
+
+## Deployment Checklist
+
+### Pre-Deployment
+- [ ] Migration tested in development environment
+- [ ] Rollback plan documented
+- [ ] Performance impact assessed for large tables
+- [ ] Organization isolation verified
+- [ ] Backup created
+
+### Post-Deployment
+- [ ] Migration applied successfully
+- [ ] Application starts without errors
+- [ ] Data integrity checks passed
+- [ ] Performance metrics within acceptable range
+- [ ] Organization isolation functioning
+
+## Emergency Procedures
+
+### 1. Migration Rollback
+```bash
+# Development only - never in production
+make db-migrate-downgrade
+
+# Production - restore from backup
+# 1. Stop application
+# 2. Restore database from backup
+# 3. Deploy previous application version
+```
+
+### 2. Failed Migration Recovery
+```bash
+# Mark migration as applied without running it
+docker compose exec core-api alembic stamp head
+
+# Or mark specific revision
+docker compose exec core-api alembic stamp <revision_id>
+```
+
+## Common Patterns
+
+### 1. Adding a New Multi-Tenant Table
+```python
+# In models.py
+class NewFeature(Base):
+    __tablename__ = "new_features"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    settings = Column(JSONB, default={})
+    created_at = Column(TIMESTAMP, default=func.now())
+    updated_at = Column(TIMESTAMP, default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    organization = relationship("Organization")
+    
+    # Constraints and indexes
+    __table_args__ = (
+        UniqueConstraint('organization_id', 'name'),
+        Index('idx_new_features_organization_id', 'organization_id'),
+        Index('idx_new_features_org_created', 'organization_id', 'created_at'),
+    )
+```
+
+### 2. Adding Organization Context to Existing Table
+```python
+# Migration file
+def upgrade():
+    # Add organization_id column
+    op.add_column('existing_table', sa.Column('organization_id', postgresql.UUID(as_uuid=True)))
+    
+    # Populate with default organization
+    op.execute("""
+        UPDATE existing_table 
+        SET organization_id = (
+            SELECT id FROM organizations 
+            WHERE slug = 'default' 
+            LIMIT 1
+        )
+        WHERE organization_id IS NULL
+    """)
+    
+    # Make non-nullable and add constraints
+    op.alter_column('existing_table', 'organization_id', nullable=False)
+    op.create_foreign_key(
+        'fk_existing_table_organization', 
+        'existing_table', 
+        'organizations', 
+        ['organization_id'], 
+        ['id'], 
+        ondelete='CASCADE'
+    )
+    op.create_index('idx_existing_table_organization_id', 'existing_table', ['organization_id'])
+```
+
+This rule ensures consistent, secure, and maintainable database schema management across the Enterprise RAG system.

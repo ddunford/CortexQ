@@ -1,7 +1,7 @@
 """
 Intent Classification Module
 Migrated from services/query/classification-service/src/classifiers.py
-Provides sophisticated intent detection for queries
+Provides sophisticated intent detection for queries with multi-tenant isolation
 """
 
 import re
@@ -26,101 +26,140 @@ class ClassificationResult:
 
 
 class IntentClassifier:
-    """Advanced intent classification with multiple methods"""
+    """Advanced intent classification with multiple methods and multi-tenant isolation"""
     
     def __init__(self):
+        # Intent patterns for classification
         self.intent_patterns = {
             "bug_report": {
-                "keywords": ["error", "bug", "crash", "broken", "issue", "problem", "not working", "fail", "exception"],
-                "patterns": [
-                    r".*error.*",
-                    r".*crash.*",
-                    r".*not working.*",
-                    r".*broken.*",
-                    r".*fail(s|ed|ing)?.*",
-                    r".*exception.*",
-                    r".*bug.*"
+                "keywords": [
+                    "error", "bug", "issue", "problem", "crash", "fail", "broken",
+                    "exception", "stack trace", "not working", "doesn't work",
+                    "unexpected", "wrong", "incorrect", "malfunction"
                 ],
-                "context_indicators": ["stack trace", "error message", "exception", "debug"]
+                "patterns": [
+                    r"error.*when.*",
+                    r"getting.*error.*",
+                    r".*not.*work.*",
+                    r".*crash.*",
+                    r".*fail.*to.*",
+                    r".*broken.*",
+                    r"exception.*",
+                    r"stack.*trace.*"
+                ]
             },
             "feature_request": {
-                "keywords": ["feature", "request", "add", "new", "enhancement", "improvement", "want", "need", "wish"],
-                "patterns": [
-                    r".*feature.*",
-                    r".*request.*",
-                    r"can you add.*",
-                    r".*enhancement.*",
-                    r"i need.*",
-                    r"i want.*",
-                    r"please add.*"
+                "keywords": [
+                    "feature", "enhancement", "improvement", "add", "new",
+                    "request", "suggest", "proposal", "implement", "support",
+                    "would like", "can you", "please add", "missing"
                 ],
-                "context_indicators": ["roadmap", "backlog", "feature", "enhancement"]
+                "patterns": [
+                    r"can.*you.*add.*",
+                    r"would.*like.*to.*",
+                    r"feature.*request.*",
+                    r"please.*implement.*",
+                    r"missing.*feature.*",
+                    r"enhancement.*",
+                    r"improvement.*"
+                ]
             },
             "training": {
-                "keywords": ["how", "tutorial", "guide", "help", "documentation", "learn", "explain", "show", "teach"],
-                "patterns": [
-                    r"how to.*",
-                    r".*tutorial.*",
-                    r".*guide.*",
-                    r"help me.*",
-                    r"how do i.*",
-                    r"can you show.*",
-                    r".*documentation.*"
+                "keywords": [
+                    "how", "tutorial", "guide", "documentation", "learn",
+                    "training", "help", "explain", "show", "teach",
+                    "understand", "configure", "setup", "install"
                 ],
-                "context_indicators": ["documentation", "guide", "tutorial", "help"]
+                "patterns": [
+                    r"how.*do.*i.*",
+                    r"how.*to.*",
+                    r"tutorial.*",
+                    r"guide.*for.*",
+                    r"help.*with.*",
+                    r"explain.*",
+                    r"show.*me.*"
+                ]
             },
             "general_query": {
-                "keywords": ["what", "when", "where", "who", "why", "information", "details"],
-                "patterns": [
-                    r"what is.*",
-                    r"when does.*",
-                    r"where can.*",
-                    r"who is.*",
-                    r"why does.*"
+                "keywords": [
+                    "what", "when", "where", "who", "why", "information",
+                    "details", "about", "status", "update"
                 ],
-                "context_indicators": ["information", "details", "about"]
+                "patterns": [
+                    r"what.*is.*",
+                    r"tell.*me.*about.*",
+                    r"information.*about.*",
+                    r"status.*of.*"
+                ]
             }
         }
     
     async def classify_query(
         self,
         query: str,
+        organization_id: str,
         domain: str = "general",
         context: Optional[Dict] = None,
         db: Optional[Session] = None
     ) -> ClassificationResult:
-        """Classify query intent using multiple methods"""
+        """
+        Classify query intent with multi-tenant isolation
         
-        query_lower = query.lower().strip()
+        Args:
+            query: User query to classify
+            domain: Domain context for classification
+            organization_id: Organization ID for multi-tenant isolation
+            context: Additional context for classification
+            db: Database session for storing results
+            
+        Returns:
+            ClassificationResult with intent, confidence, and reasoning
+        """
+        if not query.strip():
+            return ClassificationResult(
+                intent="general_query",
+                confidence=0.1,
+                reasoning="Empty query defaulted to general",
+                method="default",
+                metadata={}
+            )
+        
+        # Perform multi-method classification
+        results = []
         
         # Method 1: Keyword-based classification
-        keyword_result = self._classify_by_keywords(query_lower)
+        keyword_result = self._classify_by_keywords(query)
+        results.append((keyword_result, 0.3))
         
-        # Method 2: Pattern matching
-        pattern_result = self._classify_by_patterns(query_lower)
+        # Method 2: Pattern-based classification
+        pattern_result = self._classify_by_patterns(query)
+        results.append((pattern_result, 0.4))
         
-        # Method 3: Context-aware classification
-        context_result = self._classify_by_context(query_lower, context)
+        # Method 3: Context-based classification
+        if context:
+            context_result = self._classify_by_context(query, context)
+            results.append((context_result, 0.2))
         
-        # Method 4: Domain-specific classification
-        domain_result = self._classify_by_domain(query_lower, domain)
+        # Method 4: Domain-based classification
+        domain_result = self._classify_by_domain(query, domain)
+        results.append((domain_result, 0.1))
         
-        # Combine results with weighted scoring
-        final_result = self._combine_results([
-            (keyword_result, 0.3),
-            (pattern_result, 0.4),
-            (context_result, 0.2),
-            (domain_result, 0.1)
-        ])
+        # Combine results
+        final_result = self._combine_results(results)
         
-        # Store classification result in database if available
+        # Store classification result with organization context
         if db:
-            await self._store_classification(db, query, final_result, domain)
+            await self._store_classification(
+                db, query, final_result, domain, organization_id, 
+                context.get("user_id") if context else None,
+                context.get("session_id") if context else None
+            )
         
         return final_result
     
     def _classify_by_keywords(self, query: str) -> ClassificationResult:
         """Classify based on keyword matching"""
+        query_lower = query.lower()
         scores = {}
         
         for intent, data in self.intent_patterns.items():
@@ -128,7 +167,7 @@ class IntentClassifier:
             matched_keywords = []
             
             for keyword in data["keywords"]:
-                if keyword in query:
+                if keyword in query_lower:
                     score += 1
                     matched_keywords.append(keyword)
             
@@ -136,16 +175,15 @@ class IntentClassifier:
                 confidence = min(score / len(data["keywords"]), 1.0)
                 scores[intent] = {
                     "confidence": confidence,
-                    "matched_keywords": matched_keywords,
-                    "score": score
+                    "matched_keywords": matched_keywords
                 }
         
         if not scores:
             return ClassificationResult(
                 intent="general_query",
-                confidence=0.3,
-                reasoning="No specific keywords detected, defaulting to general query",
-                method="keyword",
+                confidence=0.2,
+                reasoning="No keywords matched",
+                method="keywords",
                 metadata={}
             )
         
@@ -155,20 +193,21 @@ class IntentClassifier:
         return ClassificationResult(
             intent=best_intent,
             confidence=best_score["confidence"],
-            reasoning=f"Matched keywords: {', '.join(best_score['matched_keywords'])}",
-            method="keyword",
+            reasoning=f"Keywords matched: {', '.join(best_score['matched_keywords'])}",
+            method="keywords",
             metadata={"matched_keywords": best_score["matched_keywords"]}
         )
     
     def _classify_by_patterns(self, query: str) -> ClassificationResult:
         """Classify based on regex pattern matching"""
+        query_lower = query.lower()
         scores = {}
         
         for intent, data in self.intent_patterns.items():
             matched_patterns = []
             
             for pattern in data["patterns"]:
-                if re.search(pattern, query, re.IGNORECASE):
+                if re.search(pattern, query_lower):
                     matched_patterns.append(pattern)
             
             if matched_patterns:
@@ -181,9 +220,9 @@ class IntentClassifier:
         if not scores:
             return ClassificationResult(
                 intent="general_query",
-                confidence=0.3,
-                reasoning="No patterns matched, defaulting to general query",
-                method="pattern",
+                confidence=0.2,
+                reasoning="No patterns matched",
+                method="patterns",
                 metadata={}
             )
         
@@ -193,8 +232,8 @@ class IntentClassifier:
         return ClassificationResult(
             intent=best_intent,
             confidence=best_score["confidence"],
-            reasoning=f"Matched patterns: {len(best_score['matched_patterns'])} out of {len(self.intent_patterns[best_intent]['patterns'])}",
-            method="pattern",
+            reasoning=f"Patterns matched: {len(best_score['matched_patterns'])}",
+            method="patterns",
             metadata={"matched_patterns": best_score["matched_patterns"]}
         )
     
@@ -204,28 +243,31 @@ class IntentClassifier:
             return ClassificationResult(
                 intent="general_query",
                 confidence=0.1,
-                reasoning="No context available",
+                reasoning="No context provided",
                 method="context",
                 metadata={}
             )
         
-        # Check for context indicators in previous messages
-        context_text = " ".join([
-            msg.get("content", "") for msg in context.get("recent_messages", [])
-        ]).lower()
+        # Analyze recent messages for context clues
+        recent_messages = context.get("recent_messages", [])
+        context_indicators = {
+            "bug_report": ["error", "problem", "issue", "bug"],
+            "feature_request": ["feature", "add", "new", "enhancement"],
+            "training": ["how", "help", "tutorial", "guide"],
+            "general_query": ["what", "when", "where", "info"]
+        }
         
         scores = {}
-        for intent, data in self.intent_patterns.items():
-            score = 0
+        for intent, indicators in context_indicators.items():
             matched_indicators = []
+            for message in recent_messages[-3:]:  # Last 3 messages
+                content = message.get("content", "").lower()
+                for indicator in indicators:
+                    if indicator in content:
+                        matched_indicators.append(indicator)
             
-            for indicator in data["context_indicators"]:
-                if indicator in context_text:
-                    score += 1
-                    matched_indicators.append(indicator)
-            
-            if score > 0:
-                confidence = min(score / len(data["context_indicators"]), 1.0)
+            if matched_indicators:
+                confidence = min(len(matched_indicators) / 5, 0.8)  # Cap at 0.8 for context
                 scores[intent] = {
                     "confidence": confidence,
                     "matched_indicators": matched_indicators
@@ -234,7 +276,7 @@ class IntentClassifier:
         if not scores:
             return ClassificationResult(
                 intent="general_query",
-                confidence=0.2,
+                confidence=0.1,
                 reasoning="No context indicators found",
                 method="context",
                 metadata={}
@@ -345,19 +387,20 @@ class IntentClassifier:
         query: str,
         result: ClassificationResult,
         domain: str,
+        organization_id: str,
         user_id: Optional[str] = None,
         session_id: Optional[str] = None
     ):
-        """Store classification result in database"""
+        """Store classification result in database with organization context"""
         try:
             classification_id = str(uuid.uuid4())
             db.execute(
                 text("""
                     INSERT INTO classification_results (
-                        id, query, intent, confidence, domain, classification_method,
+                        id, query, intent, confidence, domain, organization_id, classification_method,
                         reasoning, metadata, user_id, session_id, created_at
                     ) VALUES (
-                        :id, :query, :intent, :confidence, :domain, :method,
+                        :id, :query, :intent, :confidence, :domain, :organization_id, :method,
                         :reasoning, :metadata, :user_id, :session_id, :created_at
                     )
                 """),
@@ -367,6 +410,7 @@ class IntentClassifier:
                     "intent": result.intent,
                     "confidence": result.confidence,
                     "domain": domain,
+                    "organization_id": organization_id,
                     "method": result.method,
                     "reasoning": result.reasoning,
                     "metadata": json.dumps(result.metadata),
@@ -383,13 +427,17 @@ class IntentClassifier:
     async def get_classification_analytics(
         self,
         db: Session,
+        organization_id: str,
         domain: Optional[str] = None,
         days: int = 7
     ) -> Dict:
-        """Get classification analytics"""
-        where_clause = "WHERE created_at >= NOW() - INTERVAL '%s days'" % days
+        """Get classification analytics with organization isolation"""
+        where_clause = "WHERE created_at >= NOW() - INTERVAL '%s days' AND organization_id = :org_id" % days
+        params = {"org_id": organization_id}
+        
         if domain:
-            where_clause += f" AND domain = '{domain}'"
+            where_clause += " AND domain = :domain"
+            params["domain"] = domain
         
         # Intent distribution
         intent_stats = db.execute(
@@ -399,7 +447,8 @@ class IntentClassifier:
                 {where_clause}
                 GROUP BY intent
                 ORDER BY count DESC
-            """)
+            """),
+            params
         ).fetchall()
         
         # Daily trends
@@ -410,10 +459,14 @@ class IntentClassifier:
                 {where_clause}
                 GROUP BY DATE(created_at), intent
                 ORDER BY date DESC
-            """)
+            """),
+            params
         ).fetchall()
         
         return {
+            "organization_id": organization_id,
+            "domain": domain,
+            "period_days": days,
             "intent_distribution": [
                 {
                     "intent": row.intent,

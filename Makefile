@@ -1,104 +1,202 @@
-.PHONY: setup install test dev clean build start stop logs help start-file-service start-vector-service test-vector
+.PHONY: help setup build up down logs clean restart status health frontend backend services
 
 # Default target
 help:
+	@echo "🚀 Enterprise RAG System - Docker Management"
+	@echo ""
 	@echo "Available commands:"
-	@echo "  setup           - Set up development environment"
-	@echo "  install         - Install Python dependencies"
-	@echo "  dev             - Start development environment"
-	@echo "  build           - Build all Docker services"
-	@echo "  start           - Start all services"
-	@echo "  stop            - Stop all services"
-	@echo "  test            - Run tests"
-	@echo "  start-file-service   - Start file service in development mode"
-	@echo "  start-vector-service - Start vector service in development mode"
-	@echo "  test-vector     - Test vector service functionality"
-	@echo "  logs            - Show logs from all services"
-	@echo "  clean           - Clean up development environment"
+	@echo "  setup     - Initial setup and environment preparation"
+	@echo "  build     - Build all Docker images"
+	@echo "  up        - Start all services"
+	@echo "  down      - Stop all services"
+	@echo "  restart   - Restart all services"
+	@echo "  logs      - Show logs for all services"
+	@echo "  status    - Show status of all services"
+	@echo "  health    - Check health of all services"
+	@echo "  clean     - Clean up containers, images, and volumes"
+	@echo ""
+	@echo "Individual services:"
+	@echo "  frontend  - Start only frontend (Next.js)"
+	@echo "  backend   - Start only backend services"
+	@echo "  services  - Start only microservices"
+	@echo ""
+	@echo "Development:"
+	@echo "  dev       - Start in development mode with hot reload"
+	@echo "  test      - Run tests"
+	@echo "  lint      - Run linting"
 
+# Initial setup
 setup:
-	@echo "🚀 Setting up development environment..."
-	python3 -m venv venv
-	./venv/bin/pip install --upgrade pip
-	./venv/bin/pip install -r requirements.txt
-	./venv/bin/pip install numpy faiss-cpu pgvector pydantic-settings
-	cp .env.example .env
-	@echo "✅ Setup complete! Edit .env file with your configuration."
+	@echo "🔧 Setting up Enterprise RAG System..."
+	@cp .env.example .env
+	@echo "✅ Environment file created"
+	@docker network create rag-network 2>/dev/null || true
+	@echo "✅ Docker network created"
+	@echo "🎯 Setup complete! Run 'make up' to start the system"
 
-install:
-	@echo "📦 Installing dependencies..."
-	./venv/bin/pip install -r requirements.txt
-
-dev:
-	@echo "🔧 Starting development environment..."
-	docker compose up -d postgres redis
-	@echo "✅ Database services started. Run 'make start-file-service' and 'make start-vector-service' to start services."
-
+# Build all images
 build:
-	@echo "🏗️ Building Docker services..."
-	docker compose build
+	@echo "🏗️  Building all Docker images..."
+	@docker compose build --parallel
+	@echo "✅ All images built successfully"
 
-start:
-	@echo "🚀 Starting all services..."
-	docker compose up -d
+# Start all services
+up:
+	@echo "🚀 Starting Enterprise RAG System..."
+	@docker compose up -d
+	@echo "✅ All services started"
+	@echo ""
+	@echo "🌐 Access points:"
+	@echo "  Frontend:     http://localhost:3000"
+	@echo "  API:          http://localhost:8001"
+	@echo "  Bot Service:  http://localhost:8012"
+	@echo "  Nginx:        http://localhost:80"
+	@echo "  Ollama:       http://localhost:11434"
+	@echo ""
+	@echo "📊 Run 'make status' to check service health"
 
-stop:
+# Stop all services
+down:
 	@echo "🛑 Stopping all services..."
-	docker compose down
+	@docker compose down
+	@echo "✅ All services stopped"
 
-start-file-service:
-	@echo "🚀 Starting file service in development mode..."
-	cd services/ingestion/file-service && ../../../venv/bin/python src/main.py
+# Restart all services
+restart:
+	@echo "🔄 Restarting all services..."
+	@docker compose restart
+	@echo "✅ All services restarted"
 
-start-vector-service:
-	@echo "🚀 Starting vector service in development mode..."
-	cd services/search/vector-service && ../../../venv/bin/python src/main.py
+# Show logs
+logs:
+	@echo "📋 Showing logs for all services..."
+	@docker compose logs -f --tail=100
 
-test-vector:
-	@echo "🧪 Testing vector service functionality..."
-	@echo "1. Testing health endpoint..."
-	curl -s http://localhost:8002/health | python -m json.tool
-	@echo "\n2. Testing embedding generation..."
-	curl -s -X POST http://localhost:8002/embed \
-		-H "Content-Type: application/json" \
-		-d '{"text": "This is a test document for embedding generation", "source_type": "test"}' | python -m json.tool
-	@echo "\n3. Testing search functionality..."
-	curl -s -X POST http://localhost:8002/search \
-		-H "Content-Type: application/json" \
-		-d '{"query": "test document", "top_k": 5}' | python -m json.tool
+# Show service status
+status:
+	@echo "📊 Service Status:"
+	@echo "===================="
+	@docker compose ps
+	@echo ""
+	@echo "🔍 Docker Stats:"
+	@docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}"
 
+# Health check all services
+health:
+	@echo "🏥 Health Check Results:"
+	@echo "========================"
+	@echo -n "Frontend:     "; curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 || echo "DOWN"
+	@echo -n "Core API:     "; curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/health || echo "DOWN"
+	@echo -n "Bot Service:  "; curl -s -o /dev/null -w "%{http_code}" http://localhost:8012/health || echo "DOWN"
+	@echo -n "Ollama:       "; curl -s -o /dev/null -w "%{http_code}" http://localhost:11434/api/tags || echo "DOWN"
+	@echo -n "Nginx:        "; curl -s -o /dev/null -w "%{http_code}" http://localhost:80/health || echo "DOWN"
+	@echo -n "PostgreSQL:   "; docker compose exec postgres pg_isready -U admin -d rag_searcher > /dev/null 2>&1 && echo "200" || echo "DOWN"
+	@echo -n "Redis:        "; docker compose exec redis redis-cli ping > /dev/null 2>&1 && echo "200" || echo "DOWN"
+
+# Clean up everything
+clean:
+	@echo "🧹 Cleaning up Docker resources..."
+	@docker compose down -v --remove-orphans
+	@docker system prune -f
+	@docker volume prune -f
+	@echo "✅ Cleanup complete"
+
+# Development mode with hot reload
+dev:
+	@echo "🔧 Starting in development mode..."
+	@docker compose -f docker compose.yml -f docker compose.dev.yml up -d
+	@echo "✅ Development environment started"
+
+# Start only frontend
+frontend:
+	@echo "🎨 Starting frontend only..."
+	@docker compose up -d postgres redis core-api frontend
+	@echo "✅ Frontend stack started"
+
+# Start only backend services
+backend:
+	@echo "⚙️  Starting backend services..."
+	@docker compose up -d postgres redis core-api ollama
+	@echo "✅ Backend services started"
+
+# Start only microservices
+services:
+	@echo "🔧 Starting microservices..."
+	@docker compose up -d bot-service
+	@echo "✅ Microservices started"
+
+# Initialize Ollama models
+init-ollama:
+	@echo "🤖 Initializing Ollama models..."
+	@docker compose exec ollama ollama pull llama2
+	@docker compose exec ollama ollama pull nomic-embed-text
+	@echo "✅ Ollama models initialized"
+
+# Run tests
 test:
 	@echo "🧪 Running tests..."
-	./venv/bin/pytest tests/ -v
+	@docker compose exec core-api python -m pytest tests/ -v
+	@echo "✅ Tests completed"
 
-test-unit:
-	@echo "🧪 Running unit tests..."
-	./venv/bin/pytest tests/unit/ -v
+# Run linting
+lint:
+	@echo "🔍 Running linting..."
+	@docker compose exec core-api python -m flake8 src/
+	@docker compose exec frontend npm run lint
+	@echo "✅ Linting completed"
 
-test-integration:
-	@echo "🧪 Running integration tests..."
-	./venv/bin/pytest tests/integration/ -v
+# Database operations
+db-migrate:
+	@echo "📊 Running database migrations..."
+	@docker compose exec core-api alembic upgrade head
+	@echo "✅ Database migrations completed"
 
-logs:
-	@echo "📋 Showing logs..."
-	docker compose logs -f
+db-migrate-create:
+	@echo "📝 Creating new migration..."
+	@docker compose exec core-api alembic revision --autogenerate -m "$(MSG)"
+	@echo "✅ Migration created"
 
-clean:
-	@echo "🧹 Cleaning up..."
-	docker compose down -v
-	docker system prune -f
-	rm -rf venv/
-	@echo "✅ Cleanup complete!"
+db-migrate-status:
+	@echo "📋 Migration status..."
+	@docker compose exec core-api alembic current
+	@docker compose exec core-api alembic history
 
-init-db:
-	@echo "🗄️ Initializing database..."
-	docker compose exec postgres psql -U admin -d rag_searcher -f /docker-entrypoint-initdb.d/init_db.sql
+db-migrate-downgrade:
+	@echo "⬇️  Rolling back migration..."
+	@docker compose exec core-api alembic downgrade -1
+	@echo "✅ Migration rolled back"
 
-format:
-	@echo "🎨 Formatting code..."
-	./venv/bin/black services/
-	./venv/bin/flake8 services/
+db-reset:
+	@echo "🗄️  Resetting database..."
+	@docker compose down postgres
+	@docker volume rm rag_chat_postgres_data
+	@docker compose up -d postgres
+	@echo "✅ Database reset completed"
 
-pre-commit-setup:
-	@echo "🔗 Setting up pre-commit hooks..."
-	./venv/bin/pre-commit install 
+# Backup operations
+backup:
+	@echo "💾 Creating backup..."
+	@mkdir -p backups
+	@docker compose exec postgres pg_dump -U admin rag_searcher > backups/backup_$(shell date +%Y%m%d_%H%M%S).sql
+	@echo "✅ Backup created in backups/ directory"
+
+# Monitor logs for specific service
+logs-frontend:
+	@docker compose logs -f frontend
+
+logs-api:
+	@docker compose logs -f core-api
+
+logs-bot:
+	@docker compose logs -f bot-service
+
+logs-ollama:
+	@docker compose logs -f ollama
+
+# Quick commands
+quick-start: setup build up init-ollama
+	@echo "🎉 Enterprise RAG System is ready!"
+	@echo "Visit http://localhost:3000 to access the professional frontend"
+
+quick-stop: down clean
+	@echo "🛑 System stopped and cleaned" 
