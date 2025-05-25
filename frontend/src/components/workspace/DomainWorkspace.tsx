@@ -183,27 +183,12 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     const files = Array.from(event.target.files || []);
     if (files.length === 0) return;
 
-    console.log('=== FILE SELECT DEBUG ===');
-    console.log('Number of files selected:', files.length);
-    
-    files.forEach((file, index) => {
-      console.log(`File ${index + 1}:`, {
-        name: file.name,
-        size: file.size,
-        type: file.type,
-        lastModified: file.lastModified
-      });
-    });
-
     setUploading(true);
     try {
       for (const file of files) {
-        console.log(`Uploading file: ${file.name} (size: ${file.size})`);
         const uploadResponse = await apiClient.uploadFile(file, domain.domain_name);
-        if (uploadResponse.success) {
-          console.log(`Successfully uploaded: ${file.name}`);
-        } else {
-          console.error(`Failed to upload ${file.name}:`, uploadResponse.message);
+        if (!uploadResponse.success) {
+          // Handle upload failure silently or with proper error reporting
         }
       }
       

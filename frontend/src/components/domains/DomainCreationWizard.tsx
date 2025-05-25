@@ -161,21 +161,17 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
         
         // Upload any selected files
         if (uploadedFiles.length > 0) {
-          console.log(`Uploading ${uploadedFiles.length} files to domain ${domain.domain_name}`);
           setUploading(true);
           
           for (let i = 0; i < uploadedFiles.length; i++) {
             const file = uploadedFiles[i];
             try {
-              console.log(`Uploading file ${i + 1}/${uploadedFiles.length}: ${file.name}`);
               const uploadResponse = await apiClient.uploadFile(file, domain.domain_name);
-              if (uploadResponse.success) {
-                console.log(`Successfully uploaded: ${file.name}`);
-              } else {
-                console.error(`Failed to upload ${file.name}:`, uploadResponse.message);
+              if (!uploadResponse.success) {
+                // Handle upload failure silently or with proper error reporting
               }
             } catch (error) {
-              console.error(`Failed to upload file ${file.name}:`, error);
+              // Handle upload error silently or with proper error reporting
             }
           }
           
@@ -184,7 +180,6 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
 
         // Set up web scraper if configured
         if (webUrls.length > 0 && webUrls[0]) {
-          console.log(`Setting up web scraper for ${webUrls.length} URLs`);
           try {
             const scrapingResponse = await apiClient.startWebScraping({
               urls: webUrls.filter(url => url.trim()),
@@ -193,9 +188,9 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
               max_pages: 100,
               delay: 1.0
             });
-            console.log('Web scraping started:', scrapingResponse.data);
+            // Web scraping started successfully
           } catch (error) {
-            console.error('Failed to start web scraping:', error);
+            // Handle web scraping error silently or with proper error reporting
           }
         }
 

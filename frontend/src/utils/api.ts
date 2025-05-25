@@ -233,30 +233,14 @@ class ApiClient {
 
   // File Management APIs
   async uploadFile(file: File, domain: string): Promise<ApiResponse<Document>> {
-    console.log('=== UPLOAD FILE DEBUG ===');
-    console.log('File object:', file);
-    console.log('File name:', file.name);
-    console.log('File size:', file.size);
-    console.log('File type:', file.type);
-    console.log('File lastModified:', file.lastModified);
-    
-    // Check if file is readable
+    // Validate file before upload
     if (file.size === 0) {
-      console.error('ERROR: File size is 0!');
+      throw new Error('File is empty and cannot be uploaded');
     }
     
     const formData = new FormData();
     formData.append('file', file);
     formData.append('domain', domain);
-    
-    console.log('FormData created');
-    console.log('FormData entries:');
-    for (const [key, value] of formData.entries()) {
-      console.log(`  ${key}:`, value);
-      if (value instanceof File) {
-        console.log(`    File name: ${value.name}, size: ${value.size}`);
-      }
-    }
 
     return this.request('/files/upload', {
       method: 'POST',
@@ -474,7 +458,7 @@ export class ChatWebSocket {
     this.ws = new WebSocket(wsUrl);
 
     this.ws.onopen = () => {
-      console.log('WebSocket connected');
+      // WebSocket connection established
     };
 
     this.ws.onmessage = (event) => {
@@ -482,17 +466,17 @@ export class ChatWebSocket {
         const data = JSON.parse(event.data);
         this.onMessage(data);
       } catch (error) {
-        console.error('Failed to parse WebSocket message:', error);
+        // Handle parsing errors silently or with proper error reporting
+        this.onError(error as Event);
       }
     };
 
     this.ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
       this.onError(error);
     };
 
     this.ws.onclose = () => {
-      console.log('WebSocket disconnected');
+      // WebSocket connection closed
     };
   }
 

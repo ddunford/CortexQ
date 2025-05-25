@@ -99,7 +99,6 @@ export default function HomePage() {
           }
         } else {
           // Create a real organization via API
-          console.log('No organization found, creating demo organization...');
           try {
             // Generate a unique slug to avoid conflicts
             const timestamp = Date.now();
@@ -168,7 +167,6 @@ export default function HomePage() {
   };
 
   const handleCreateDomain = () => {
-    console.log('Create Domain button clicked');
     setState(prev => ({ ...prev, currentView: 'create-domain' }));
   };
 
