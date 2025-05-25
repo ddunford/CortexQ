@@ -1,0 +1,18 @@
+"""
+Routes package for Enterprise RAG API
+Exports all routers for easy importing
+"""
+
+from .auth_routes import router as auth_router
+from .file_routes import router as file_router
+from .organization_routes import router as organization_router
+from .analytics_routes import router as analytics_router
+from .chat_routes import router as chat_router
+
+__all__ = [
+    "auth_router",
+    "file_router", 
+    "organization_router",
+    "analytics_router",
+    "chat_router"
+] 

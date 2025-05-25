@@ -2,11 +2,147 @@
 
 This document provides a comprehensive breakdown of development tasks based on the [PRD.md](PRD.md) requirements, organized by development phases and priority.
 
-**🔍 LAST UPDATED**: January 27, 2025 - **SMART CACHE SYSTEM IMPLEMENTED**
+**🔍 LAST UPDATED**: January 27, 2025 - **COMPREHENSIVE CODE REVIEW COMPLETED**
 
 **Project Status**: **Backend: 99% Complete | Frontend: 85% Complete | Overall: 88% Complete**
 
 **🚨 CRITICAL STATUS**: **MAJOR PROGRESS UNDERESTIMATED** - System is much more advanced than previously assessed. Frontend has professional React architecture with domain-centric design.
+
+---
+
+## 🔧 **CODE QUALITY ISSUES IDENTIFIED - IMMEDIATE CLEANUP REQUIRED**
+
+### **🎯 REFACTORING PROGRESS UPDATE** ✅ **MAJOR PROGRESS MADE**
+**Status**: **Day 1 Objectives 85% Complete** - Significant modular architecture improvements implemented
+
+**✅ Completed Refactoring (1,300+ lines extracted)**:
+- **Models Package** - 5 dedicated model modules (`auth_models.py`, `chat_models.py`, `file_models.py`, `organization_models.py`, `role_models.py`)
+- **Dependencies Package** - 2 dependency modules (`auth_dependencies.py`, `database_dependencies.py`)
+- **Routes Package** - 3 route modules (`auth_routes.py`, `file_routes.py`, `chat_routes.py`)
+- **Redundant Endpoint Cleanup** - Removed 4 duplicate upload endpoints, consolidated into 1 production endpoint
+- **Code Organization** - Proper FastAPI router pattern with dependency injection
+
+**📊 File Size Reduction**:
+- **Before**: `main.py` = 3,663 lines (monolithic)
+- **After**: `main.py` = ~2,350 lines (36% reduction) + modular architecture
+- **Extracted**: 1,300+ lines into organized modules
+
+**🔄 Remaining Tasks**:
+- Organization routes extraction (~600 lines)
+- Analytics routes extraction (~300 lines)  
+- Debug endpoints removal (~200 lines)
+- Router registration in main.py
+
+---
+
+### **1. CRITICAL: Massive Monolithic main.py File** 🚨 **HIGH PRIORITY**
+**Issue**: `core-api/src/main.py` is 3,663 lines - violates single responsibility principle
+**Impact**: Maintenance nightmare, testing difficulty, code review complexity
+
+**Required Refactoring**:
+- [x] ✅ **COMPLETED**: **Split Authentication Module** - Extracted auth endpoints to `auth_routes.py` (~595 lines)
+- [x] ✅ **COMPLETED**: **Split File Management Module** - Extracted file endpoints to `file_routes.py` (~500+ lines)
+- [x] ✅ **COMPLETED**: **Split Chat Module** - Extracted chat endpoint to `chat_routes.py` (~212 lines)
+- [ ] **Split Organization Module** - Extract org endpoints to `organization_routes.py` (~600 lines)
+- [ ] **Split Analytics Module** - Extract analytics endpoints to `analytics_routes.py` (~300 lines)
+- [ ] **Split Debug Module** - Extract debug endpoints to `debug_routes.py` (~200 lines)
+- [ ] **Create Router Registration** - Central router registration in main.py
+- [x] ✅ **COMPLETED**: **Extract Pydantic Models** - Moved all models to `models/` directory (5 modules)
+- [x] ✅ **COMPLETED**: **Extract Dependencies** - Moved auth/db dependencies to `dependencies/` directory
+- [ ] **Extract Utility Functions** - Move helper functions to appropriate modules
+
+### **2. CRITICAL: Multiple Redundant File Upload Endpoints** 🚨 **HIGH PRIORITY**
+**Issue**: 5 different file upload endpoints with duplicate logic
+**Impact**: Code duplication, maintenance burden, security inconsistency
+
+**Redundant Endpoints Identified**:
+- [x] ✅ **COMPLETED**: **Removed** `/files/test-upload` - Debug endpoint, no auth (was lines 1067-1093)
+- [x] ✅ **COMPLETED**: **Removed** `/files/simple-upload` - Simplified version (was lines 1094-1173)
+- [x] ✅ **COMPLETED**: **Removed** `/files/minimal-upload` - No auth version (was lines 2106-2131)
+- [x] ✅ **COMPLETED**: **Removed** `/files/basic-upload` - Another simplified version (was lines 2132-2172)
+- [x] ✅ **COMPLETED**: **Consolidated** `/files/upload` - Single production endpoint with all validation
+- [x] ✅ **COMPLETED**: **Consolidated Logic** - Extracted file type detection and validation to shared functions
+
+### **3. HIGH: Debug Code and Console Logs** ⚠️ **MEDIUM PRIORITY**
+**Issue**: Production code contains debug statements and console.log calls
+**Impact**: Performance degradation, log pollution, unprofessional appearance
+
+**Debug Code to Remove**:
+- [ ] **Frontend Console.log Cleanup** - 15+ console.log statements in production code
+  - `frontend/src/utils/api.ts` - Lines 235-256 (file upload debug)
+  - `frontend/src/app/page.tsx` - Lines 101, 170 (organization debug)
+  - `frontend/src/components/workspace/DomainWorkspace.tsx` - Lines 185-203 (file debug)
+  - `frontend/src/components/domains/DomainCreationWizard.tsx` - Lines 163-195 (upload debug)
+- [ ] **Python Print Statement Cleanup** - Replace with proper logging
+  - `test_permissions.py` - 30+ print statements (should use logging)
+  - `test_api.py` - 25+ print statements (should use logging)
+  - `core-api/scripts/` - Multiple scripts with print statements
+- [ ] **Remove Debug Endpoints** - Production API has debug endpoints
+  - `/debug/auth-test` (line 3358)
+  - `/debug/upload-with-auth` (line 3369)
+  - `/debug/raw-upload` (line 3393)
+
+### **4. MEDIUM: Unused and Redundant Code** ⚠️ **MEDIUM PRIORITY**
+**Issue**: Codebase contains unused imports, backup directories, and test files
+**Impact**: Increased build size, confusion, maintenance overhead
+
+**Cleanup Required**:
+- [ ] **Remove Backup Directory** - `services_backup_20250524_234954/` (entire directory)
+- [ ] **Remove Test Files from Root** - Multiple test files in project root
+  - `test_auto_process_2.txt`
+  - `test_auto_process.txt`
+  - `test-markdown.md`
+  - `test-document.md`
+  - `test.txt`
+  - `test_document.txt`
+- [ ] **Audit Unused Imports** - Run import analysis and remove unused imports
+- [ ] **Remove Commented Code** - Clean up commented-out code blocks
+- [ ] **Consolidate Test Files** - Move all tests to `tests/` directory
+
+### **5. MEDIUM: Inconsistent Error Handling** ⚠️ **MEDIUM PRIORITY**
+**Issue**: Inconsistent error handling patterns across endpoints
+**Impact**: Poor user experience, debugging difficulty
+
+**Standardization Required**:
+- [ ] **Create Error Handler Middleware** - Centralized error handling
+- [ ] **Standardize Error Responses** - Consistent error response format
+- [ ] **Add Error Correlation IDs** - For better debugging
+- [ ] **Implement Proper HTTP Status Codes** - Consistent status code usage
+- [ ] **Add Request Validation** - Centralized input validation
+
+### **6. LOW: Code Organization and Structure** ⚠️ **LOW PRIORITY**
+**Issue**: Some modules could be better organized
+**Impact**: Developer experience, code discoverability
+
+**Improvements Needed**:
+- [ ] **Create Shared Constants** - Extract magic numbers and strings
+- [ ] **Improve Type Hints** - Add missing type annotations
+- [ ] **Add Docstrings** - Document complex functions
+- [ ] **Create Interface Definitions** - Define clear interfaces between modules
+- [ ] **Implement Design Patterns** - Use factory pattern for service creation
+
+---
+
+## ⚠️ **TASK LIST ACCURACY ISSUES IDENTIFIED**
+
+### **Task List Status Corrections** 📋 **VERIFICATION REQUIRED**
+**Issue**: Some completed tasks may not be fully implemented as claimed
+**Impact**: Inaccurate project status, potential missing functionality
+
+**Items Requiring Verification**:
+- [ ] **Verify OAuth2/SAML Integration** - Task list claims "planned enhancement" but may not be started
+- [ ] **Verify Prometheus/Grafana Stack** - Listed as "planned" but implementation status unclear
+- [ ] **Verify Distributed Tracing** - Listed as "planned" but no evidence of implementation
+- [ ] **Verify ELK/Loki Logging** - Listed as "planned" but using basic Python logging
+- [ ] **Verify Kubernetes Production Readiness** - Claims "production-ready" but needs validation
+- [ ] **Verify Bot Service Integration** - Claims "complete" but limited testing evidence
+- [ ] **Verify API Connector Framework** - Claims "complete" but implementation may be basic
+- [ ] **Verify Advanced Analytics** - Claims "complete" but may be basic implementations
+
+**Overestimated Completion Items**:
+- [ ] **Frontend "85% Complete"** - May be overestimated, missing advanced features
+- [ ] **"Enterprise-Ready"** - Needs security audit and performance testing
+- [ ] **"Production-Ready"** - Requires cleanup of debug code and proper error handling
 
 ---
 
@@ -488,75 +624,98 @@ Enterprise RAG System ✅ IMPLEMENTED
 
 ---
 
-## 🚨 **IMMEDIATE ACTION PLAN - NEXT 1 WEEK**
+## 🚨 **IMMEDIATE ACTION PLAN - NEXT 2 WEEKS**
 
-### **Week 1: Final Polish & Production Readiness**
-**Priority 1: Fix remaining issues and enhance frontend**
+### **Week 1: CRITICAL CODE CLEANUP** 🔥 **HIGHEST PRIORITY**
+**Focus**: Address code quality issues that block production deployment
 
-#### **Day 1-2: Fix Critical Issues**
-- [x] ✅ **COMPLETED**: Fixed RAG processor initialization
-- [x] ✅ **COMPLETED**: Fixed core API startup issues
-- [ ] Fix Ollama service health check
-- [ ] Verify end-to-end chat workflow functionality
-- [ ] Test all API endpoints with organization context
+#### **Day 1-2: Monolithic File Refactoring** 🔥 **IN PROGRESS**
+- [x] ✅ **COMPLETED**: **Split main.py** - Extracted 1,300+ lines into modular structure
+  - [x] ✅ **Authentication Routes** - `routes/auth_routes.py` (595 lines)
+  - [x] ✅ **File Management Routes** - `routes/file_routes.py` (500+ lines)
+  - [x] ✅ **Chat Routes** - `routes/chat_routes.py` (212 lines)
+- [x] ✅ **COMPLETED**: **Remove Redundant Upload Endpoints** - Consolidated 5 endpoints into 1 production endpoint
+- [x] ✅ **COMPLETED**: **Extract Pydantic Models** - Moved to dedicated `models/` directory (5 modules)
+- [x] ✅ **COMPLETED**: **Create Router Structure** - Implemented proper FastAPI router pattern with dependencies
 
-#### **Day 3-4: Frontend Enhancements**
+#### **Day 3-4: Debug Code Cleanup**
+- [ ] **Remove All Console.log Statements** - Replace with proper logging
+- [ ] **Remove Debug Endpoints** - Clean production API
+- [ ] **Replace Print Statements** - Use Python logging throughout
+- [ ] **Remove Test Files from Root** - Clean project structure
+
+#### **Day 5-7: Code Organization**
+- [ ] **Remove Backup Directory** - Delete `services_backup_20250524_234954/`
+- [ ] **Consolidate Test Files** - Move to proper test directories
+- [ ] **Audit Unused Imports** - Clean up import statements
+- [ ] **Standardize Error Handling** - Implement consistent error patterns
+
+### **Week 2: Production Readiness & Verification**
+**Focus**: Verify claimed functionality and prepare for production
+
+#### **Day 8-9: Functionality Verification**
+- [ ] **Verify Bot Service Integration** - Test Slack/Teams functionality
+- [ ] **Verify API Connector Framework** - Test external API integrations
+- [ ] **Verify Analytics Implementation** - Ensure all analytics work
+- [ ] **Test End-to-End Workflows** - Complete user journey testing
+
+#### **Day 10-11: Frontend Polish**
 - [ ] **Data Source Integration Wizard** - Visual connector setup
 - [ ] **Enhanced Analytics Dashboard** - Real-time metrics
 - [ ] **Advanced Chat Interface** - Rich media support
 - [ ] **Knowledge Base Manager** - Advanced file organization
 
-#### **Day 5-7: Production Readiness**
+#### **Day 12-14: Final Production Prep**
+- [ ] **Security Audit** - Comprehensive security review
 - [ ] **Performance Testing** - Load testing with multiple organizations
-- [ ] **Security Audit** - Final security review
 - [ ] **Documentation Update** - API documentation and deployment guides
-- [ ] **Monitoring Setup** - Prometheus/Grafana implementation
+- [ ] **Monitoring Setup** - Basic monitoring implementation
 
 ---
 
-## 📊 **CORRECTED STATUS SUMMARY**
+## 📊 **REVISED STATUS SUMMARY - POST CODE REVIEW**
 
 ### ✅ **Excellent Implementation (95%+ PRD Alignment)**
-1. **Core API Service** - Complete enterprise backend with all features
-2. **Multi-Domain RAG Architecture** - Advanced implementation exceeding requirements
-3. **Smart Cache System** - Intelligent semantic similarity-based caching with 35x performance
-4. **Authentication & RBAC** - Enterprise-grade security system
-5. **Database & Migrations** - Production-ready with organization isolation
-6. **MinIO Object Storage** - Enterprise S3-compatible storage with multi-tenant security
-7. **Frontend Architecture** - Professional React implementation (80% complete)
-8. **Security Implementation** - Comprehensive multi-tenant security
-9. **Bot Integration** - Complete multi-platform bot service
+1. **Multi-Domain RAG Architecture** - Advanced implementation exceeding requirements
+2. **Smart Cache System** - Intelligent semantic similarity-based caching with 35x performance
+3. **Authentication & RBAC** - Enterprise-grade security system
+4. **Database & Migrations** - Production-ready with organization isolation
+5. **MinIO Object Storage** - Enterprise S3-compatible storage with multi-tenant security
+6. **Security Implementation** - Comprehensive multi-tenant security
 
-### ⚠️ **Minor Issues (Quick Fixes)**
-1. **Ollama Health Check** - Service running but health check failing
-2. **Frontend Polish** - 20% remaining for complete PRD alignment
-3. **Monitoring Stack** - Basic monitoring, advanced observability planned
+### ⚠️ **Major Issues Requiring Immediate Attention**
+1. **Code Quality** - 3,663-line monolithic file, multiple redundant endpoints
+2. **Debug Code** - Production code contains debug statements and test endpoints
+3. **Code Organization** - Backup directories, test files in root, unused imports
+4. **Task List Accuracy** - Some "completed" items may be overestimated
 
-### 📈 **CORRECTED Completion Percentages**
-- **Backend Core Services**: 99% (excellent implementation with smart cache and MinIO storage)
-- **Frontend UI**: 80% (professional React architecture - major underestimate corrected)
-- **Security & Compliance**: 95% (enterprise-ready)
-- **Enterprise Features**: 95% (comprehensive implementation)
-- **Caching & Performance**: 100% (Smart cache system with semantic similarity analysis)
-- **Object Storage**: 100% (MinIO fully integrated with multi-tenant security)
-- **Overall System**: 88% (excellent progress with intelligent caching and enterprise storage)
+### 🔧 **REVISED Completion Percentages**
+- **Backend Core Services**: 85% (functional but needs refactoring for production)
+- **Frontend UI**: 80% (professional React architecture, needs polish)
+- **Code Quality**: 60% (major refactoring required)
+- **Security & Compliance**: 90% (excellent security, needs cleanup)
+- **Enterprise Features**: 80% (good implementation, needs verification)
+- **Production Readiness**: 70% (functional but needs cleanup for production)
+- **Overall System**: 75% (good progress but code quality issues block production)
 
-### 🎯 **Production Readiness Assessment**
-- **Backend**: ✅ Production-ready with enterprise security
-- **Frontend**: ✅ Professional implementation, 20% enhancement remaining
-- **Integration**: ✅ All services operational and integrated
+### 🎯 **REVISED Production Readiness Assessment**
+- **Backend Functionality**: ✅ Excellent features and capabilities
+- **Code Quality**: ❌ Major refactoring required before production
+- **Frontend**: ✅ Professional implementation, minor enhancements needed
 - **Security**: ✅ Enterprise-grade multi-tenant isolation
-- **Deployment**: ✅ Docker Compose and Kubernetes ready
+- **Deployment**: ⚠️ Functional but needs cleanup
 
-**🔥 Current Status**: **System is production-ready with excellent architecture and security. Previous assessment significantly underestimated progress.**
+**🔥 Current Status**: **System has excellent functionality but CRITICAL code quality issues prevent production deployment. Immediate refactoring required.**
 
-**Production Deployment**: **Ready for enterprise deployment** with minor enhancements for complete PRD alignment.
+**Production Deployment**: **BLOCKED until code quality issues resolved** - estimated 1-2 weeks of cleanup required.
 
-## 🎯 **Final Milestone**
-**Target**: **Frontend: 95% PRD Alignment | Backend: 98% PRD Alignment | Overall: 95% Complete**
+## 🎯 **Final Milestone - REVISED**
+**Target**: **Code Quality: 95% | Backend Functionality: 95% | Frontend: 90% | Overall: 90% Complete**
 
-**🔥 Current Status**: **Backend: Excellent & Production-Ready | Frontend: Professional & 80% Complete**
+**🔥 Current Status**: **Backend Functionality: Excellent | Code Quality: Needs Major Refactoring | Frontend: Professional & 80% Complete**
 
-**Production Readiness**: **System is enterprise-ready with excellent security and architecture. Frontend has professional React implementation with domain-centric design.**
+**Production Readiness**: **System has excellent functionality and security but CRITICAL code quality issues must be resolved before production deployment. Estimated 1-2 weeks of refactoring required.**
 
-This task list provides the accurate assessment of a highly advanced Enterprise RAG system that significantly exceeded initial expectations. 
+**Next Steps**: **IMMEDIATE code cleanup and refactoring to address monolithic architecture, redundant code, and debug statements before any production deployment.**
+
+This task list provides an accurate assessment of a functionally advanced Enterprise RAG system that requires significant code quality improvements for production readiness. 
