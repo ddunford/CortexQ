@@ -442,24 +442,31 @@ async def invalidate_cache(
     current_user: dict = Depends(require_permission("admin:cache")),
     db: Session = Depends(get_db)
 ):
-    """Invalidate cache entries"""
+    """Invalidate cache for a specific domain or all domains"""
     try:
+        if not rag_processor:
+            raise HTTPException(status_code=503, detail="RAG processor not available")
+        
         if domain:
             # Invalidate cache for specific domain
-            result = db.execute(
-                text("DELETE FROM cached_responses WHERE domain = :domain"),
-                {"domain": domain}
-            )
-            db.commit()
-            return {"message": f"Invalidated {result.rowcount} cache entries for domain {domain}"}
+            rag_processor.invalidate_cache_for_domain(domain)
+            message = f"Cache invalidated for domain '{domain}'"
         else:
             # Invalidate all cache
-            result = db.execute(text("DELETE FROM cached_responses"))
-            db.commit()
-            return {"message": f"Invalidated {result.rowcount} cache entries"}
-            
+            rag_processor.invalidate_all_cache()
+            message = "All cache invalidated"
+        
+        # Log the action
+        from auth_utils import AuditLogger
+        AuditLogger.log_event(
+            db, "cache_invalidation", current_user["id"], "cache", "delete",
+            message,
+            {"domain": domain, "action": "manual_invalidation"}
+        )
+        
+        return {"status": "success", "message": message}
+        
     except Exception as e:
-        db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to invalidate cache: {str(e)}")
 
 
@@ -468,43 +475,104 @@ async def get_cache_status(
     current_user: dict = Depends(require_permission("admin:cache")),
     db: Session = Depends(get_db)
 ):
-    """Get cache system status"""
+    """Get cache status and statistics"""
     try:
-        # Get basic cache statistics
-        stats_result = db.execute(
-            text("""
-                SELECT 
-                    COUNT(*) as total_entries,
-                    COUNT(CASE WHEN created_at >= NOW() - INTERVAL '1 hour' THEN 1 END) as recent_entries,
-                    AVG(hit_count) as avg_hit_count,
-                    MAX(created_at) as last_entry
-                FROM cached_responses
-            """)
-        ).fetchone()
+        if not rag_processor:
+            raise HTTPException(status_code=503, detail="RAG processor not available")
         
-        # Get memory usage estimate (rough calculation)
-        memory_result = db.execute(
-            text("""
-                SELECT 
-                    SUM(LENGTH(query_text) + LENGTH(response_text) + LENGTH(COALESCE(sources_json, ''))) as estimated_memory_bytes
-                FROM cached_responses
-            """)
-        ).fetchone()
+        cache_stats = {
+            "total_cached_responses": len(rag_processor.response_cache),
+            "cache_ttl_seconds": rag_processor.cache_ttl_seconds,
+            "similarity_threshold": rag_processor.similarity_threshold_for_cache_update,
+            "domains_tracked": len(rag_processor.domain_last_updated),
+            "cache_entries_by_domain": {},
+            "cache_entries_with_embeddings": 0,
+            "cache_entries_with_source_tracking": 0
+        }
         
-        estimated_memory_mb = (memory_result.estimated_memory_bytes / (1024 * 1024)) if memory_result and memory_result.estimated_memory_bytes else 0
+        # Analyze cache entries
+        for cache_key, cache_data in rag_processor.response_cache.items():
+            domain = cache_data.get("domain", "unknown")
+            if domain not in cache_stats["cache_entries_by_domain"]:
+                cache_stats["cache_entries_by_domain"][domain] = 0
+            cache_stats["cache_entries_by_domain"][domain] += 1
+            
+            if cache_data.get("query_embedding") is not None:
+                cache_stats["cache_entries_with_embeddings"] += 1
+            
+            if cache_data.get("source_ids"):
+                cache_stats["cache_entries_with_source_tracking"] += 1
         
+        from datetime import datetime
         return {
-            "status": "active",
-            "total_entries": stats_result.total_entries if stats_result else 0,
-            "recent_entries": stats_result.recent_entries if stats_result else 0,
-            "avg_hit_count": round(float(stats_result.avg_hit_count), 2) if stats_result and stats_result.avg_hit_count else 0,
-            "last_entry": stats_result.last_entry.isoformat() if stats_result and stats_result.last_entry else None,
-            "estimated_memory_mb": round(estimated_memory_mb, 2)
+            "status": "healthy",
+            "cache_statistics": cache_stats,
+            "smart_cache_enabled": True,
+            "last_updated": datetime.utcnow().isoformat()
         }
         
     except Exception as e:
-        logger.error(f"Failed to get cache status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get cache status: {str(e)}")
+
+
+@router.get("/cache/analytics")
+async def get_cache_analytics(
+    current_user: dict = Depends(require_permission("admin:cache")),
+    db: Session = Depends(get_db)
+):
+    """Get detailed cache analytics and performance metrics"""
+    try:
+        if not rag_processor:
+            raise HTTPException(status_code=503, detail="RAG processor not available")
+        
+        # Analyze cache hit rates from recent queries
+        cache_hit_stats = db.execute(
+            text("""
+                SELECT 
+                    COUNT(*) as total_queries,
+                    COUNT(CASE WHEN metadata::text LIKE '%cache_hit%' THEN 1 END) as cache_hits
+                FROM rag_executions 
+                WHERE created_at >= NOW() - INTERVAL '24 hours'
+            """)
+        ).fetchone()
+        
+        cache_hit_rate = 0.0
+        if cache_hit_stats and cache_hit_stats.total_queries > 0:
+            cache_hit_rate = cache_hit_stats.cache_hits / cache_hit_stats.total_queries
+        
+        # Get average response times for cached vs non-cached
+        response_time_stats = db.execute(
+            text("""
+                SELECT 
+                    AVG(CASE WHEN metadata::text LIKE '%cache_hit%' THEN processing_time_ms END) as avg_cached_time,
+                    AVG(CASE WHEN metadata::text NOT LIKE '%cache_hit%' OR metadata IS NULL THEN processing_time_ms END) as avg_uncached_time
+                FROM rag_executions 
+                WHERE created_at >= NOW() - INTERVAL '24 hours'
+            """)
+        ).fetchone()
+        
+        avg_cached_time = response_time_stats.avg_cached_time if response_time_stats else 0
+        avg_uncached_time = response_time_stats.avg_uncached_time if response_time_stats else 0
+        
+        return {
+            "cache_performance": {
+                "hit_rate": round(cache_hit_rate, 3),
+                "total_queries_24h": cache_hit_stats.total_queries if cache_hit_stats else 0,
+                "cache_hits_24h": cache_hit_stats.cache_hits if cache_hit_stats else 0,
+                "avg_cached_response_time_ms": round(avg_cached_time, 2) if avg_cached_time else 0,
+                "avg_uncached_response_time_ms": round(avg_uncached_time, 2) if avg_uncached_time else 0,
+                "performance_improvement": f"{round((avg_uncached_time / max(avg_cached_time, 1)), 1)}x faster" if avg_cached_time and avg_uncached_time else "N/A"
+            },
+            "smart_cache_features": {
+                "semantic_similarity_enabled": True,
+                "cache_enhancement_enabled": True,
+                "selective_invalidation_enabled": True,
+                "source_tracking_enabled": True
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get cache analytics: {str(e)}")
 
 
 # Export router
