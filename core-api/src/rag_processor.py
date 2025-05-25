@@ -110,6 +110,12 @@ class MultiDomainVectorStore:
     
     def __init__(self, embeddings_model: SentenceTransformer):
         self.embeddings_model = embeddings_model
+        # Initialize embeddings service for consistent embedding generation
+        try:
+            from embeddings_service import get_embeddings_service
+            self.embeddings_service = get_embeddings_service()
+        except ImportError:
+            self.embeddings_service = None
         self.domain_indices = {}
         self._initialize_indices()
     
@@ -140,34 +146,80 @@ class MultiDomainVectorStore:
         domain_data["last_updated"] = datetime.utcnow()
     
     def search(self, query: str, domain: str, top_k: int = 5, min_similarity: float = 0.3) -> List[SearchResult]:
-        """Enhanced search with filtering"""
-        if domain not in self.domain_indices:
+        """Database-based search with similarity calculation"""
+        from database import SessionLocal
+        
+        # Generate query embedding using the same service as file processing
+        if self.embeddings_service and self.embeddings_service.is_available():
+            query_embedding = np.array(self.embeddings_service.encode(query), dtype=np.float32)
+        else:
+            query_embedding = self.embeddings_model.encode([query])[0]
+        
+        db = SessionLocal()
+        try:
+            # Query embeddings from database with organization context
+            result = db.execute(
+                text("""
+                    SELECT e.id, e.content_text, e.embedding, e.source_id, e.chunk_index,
+                           f.original_filename, f.content_type, f.domain, f.organization_id
+                    FROM embeddings e
+                    JOIN files f ON e.source_id = f.id
+                    WHERE e.domain = :domain
+                    AND f.processed = true
+                    ORDER BY e.created_at DESC
+                    LIMIT 100
+                """),
+                {"domain": domain}
+            )
+            
+            embeddings_data = result.fetchall()
+            
+            if not embeddings_data:
+                return []
+            
+            # Calculate similarities
+            results = []
+            for row in embeddings_data:
+                try:
+                    # Parse stored embedding from JSON string to numpy array
+                    if isinstance(row.embedding, str):
+                        import json
+                        embedding_list = json.loads(row.embedding)
+                    else:
+                        embedding_list = row.embedding
+                    stored_embedding = np.array(embedding_list, dtype=np.float32)
+                    
+                    # Calculate cosine similarity
+                    similarity = np.dot(query_embedding, stored_embedding) / (
+                        np.linalg.norm(query_embedding) * np.linalg.norm(stored_embedding)
+                    )
+                    
+                    if similarity >= min_similarity:
+                        results.append(SearchResult(
+                            content=row.content_text,
+                            metadata={
+                                "title": row.original_filename,
+                                "content_type": row.content_type,
+                                "chunk_index": row.chunk_index,
+                                "organization_id": str(row.organization_id)
+                            },
+                            similarity=float(similarity),
+                            domain=row.domain,
+                            source_id=str(row.source_id)
+                        ))
+                except Exception as e:
+                    print(f"Error calculating similarity for embedding {row.id}: {e}")
+                    continue
+            
+            # Sort by similarity and return top results
+            results.sort(key=lambda x: x.similarity, reverse=True)
+            return results[:top_k]
+            
+        except Exception as e:
+            print(f"Database search error: {e}")
             return []
-        
-        domain_data = self.domain_indices[domain]
-        if domain_data["index"].ntotal == 0:
-            return []
-        
-        # Generate query embedding
-        query_embedding = self.embeddings_model.encode([query])
-        query_embedding = query_embedding.astype('float32')
-        
-        # Search in domain index
-        scores, indices = domain_data["index"].search(query_embedding, min(top_k, domain_data["index"].ntotal))
-        
-        results = []
-        for i, (score, idx) in enumerate(zip(scores[0], indices[0])):
-            if idx != -1 and score >= min_similarity:  # Valid result with minimum similarity
-                metadata = domain_data["metadata"][idx]
-                results.append(SearchResult(
-                    content=metadata.get("content", ""),
-                    metadata=metadata,
-                    similarity=float(score),
-                    domain=domain,
-                    source_id=domain_data["doc_ids"][idx]
-                ))
-        
-        return results
+        finally:
+            db.close()
     
     def cross_domain_search(self, query: str, domains: List[str], top_k: int = 10, min_similarity: float = 0.3) -> Dict[str, List[SearchResult]]:
         """Search across multiple domains with ranking"""
@@ -512,71 +564,329 @@ class AgentWorkflowProcessor:
 
 
 class EnhancedRAGProcessor:
-    """Enhanced RAG processor with multi-mode processing and agent workflows"""
+    """Enhanced RAG processor with multi-mode processing and intelligent routing"""
     
     def __init__(self, embeddings_model: SentenceTransformer):
         self.embeddings_model = embeddings_model
         self.vector_store = MultiDomainVectorStore(embeddings_model)
         self.agent_processor = AgentWorkflowProcessor()
-        self.response_cache = {}  # Simple in-memory cache
-        self.response_templates = self._load_response_templates()
+        # Enhanced cache with timestamps, domain tracking, and semantic metadata
+        self.response_cache = {}  # {cache_key: {"response": RAGResponse, "timestamp": datetime, "domain": str, "query_embedding": np.array, "source_ids": set}}
+        self.domain_last_updated = {}  # {domain: datetime} - track when domain content was last updated
+        self.cache_ttl_seconds = 3600  # 1 hour default TTL
+        self.similarity_threshold_for_cache_update = 0.7  # Threshold for determining if new content affects cached queries
+        
+    async def smart_cache_update_for_new_content(self, domain: str, new_file_id: str, new_content_chunks: List[str], db: Session):
+        """Smart cache update when new content is added - only update relevant cached queries"""
+        if not new_content_chunks:
+            return
+        
+        try:
+            # Generate embeddings for new content to analyze semantic similarity
+            new_content_text = " ".join(new_content_chunks[:3])  # Sample of new content
+            if self.embeddings_model:
+                new_content_embedding = self.embeddings_model.encode([new_content_text])[0]
+            else:
+                print("No embeddings model available for smart cache update")
+                return
+            
+            updated_count = 0
+            invalidated_count = 0
+            enhanced_count = 0
+            
+            # Analyze each cached query for relevance to new content
+            cache_updates = {}
+            for cache_key, cache_data in self.response_cache.items():
+                if cache_data.get("domain") != domain:
+                    continue
+                
+                query_embedding = cache_data.get("query_embedding")
+                if query_embedding is None:
+                    # Old cache entry without embedding - invalidate it
+                    cache_updates[cache_key] = "invalidate"
+                    invalidated_count += 1
+                    continue
+                
+                # Calculate semantic similarity between cached query and new content
+                similarity = np.dot(query_embedding, new_content_embedding) / (
+                    np.linalg.norm(query_embedding) * np.linalg.norm(new_content_embedding)
+                )
+                
+                if similarity >= self.similarity_threshold_for_cache_update:
+                    # High similarity - this new content is relevant to the cached query
+                    # We need to either update or invalidate this cache entry
+                    
+                    cached_response = cache_data["response"]
+                    
+                    # For now, invalidate high-similarity cached queries
+                    # TODO: Implement cache enhancement in future version
+                    cache_updates[cache_key] = "invalidate"
+                    invalidated_count += 1
+                else:
+                    # Low similarity - new content doesn't affect this cached query
+                    updated_count += 1
+            
+            # Apply cache updates
+            for cache_key, update_action in cache_updates.items():
+                if update_action == "invalidate":
+                    del self.response_cache[cache_key]
+            
+            print(f"Smart cache update for domain '{domain}': {updated_count} preserved, {enhanced_count} enhanced, {invalidated_count} invalidated")
+            
+        except Exception as e:
+            print(f"Error in smart cache update: {e}")
+            # Fallback to domain invalidation if smart update fails
+            self.invalidate_cache_for_domain(domain)
     
-    def _load_response_templates(self) -> Dict[str, str]:
-        """Load enhanced response templates"""
-        return {
-            "bug_report": """**Bug Analysis Report**
-
-{agent_response}
-
-**Confidence**: {confidence}%
-**Processing Mode**: {mode}
-
-**Sources**:
-{sources}""",
-
-            "feature_request": """**Feature Request Analysis**
-
-{agent_response}
-
-**Confidence**: {confidence}%
-**Processing Mode**: {mode}
-
-**Related Information**:
-{sources}""",
-
-            "training": """**Training & Documentation**
-
-{agent_response}
-
-**Confidence**: {confidence}%
-**Processing Mode**: {mode}
-
-**Resources**:
-{sources}""",
-
-            "general_query": """Based on your query, here's the relevant information:
-
-{context}
-
-**Confidence**: {confidence}%
-**Processing Mode**: {mode}
-
-**Sources**:
-{sources}"""
-        }
+    def _can_enhance_response(self, cached_response: RAGResponse, new_file_id: str) -> bool:
+        """Determine if a cached response can be enhanced with new content"""
+        # Don't enhance if response already has many sources
+        if cached_response.source_count >= 5:
+            return False
+        
+        # Don't enhance if confidence is already very high
+        if cached_response.confidence >= 0.9:
+            return False
+        
+        # Don't enhance error responses or no-results responses
+        if cached_response.response_type in [ResponseType.NO_RESULTS]:
+            return True  # Actually, these might benefit from new content
+        
+        return True
     
+    async def _enhance_cached_response(
+        self, 
+        cached_response: RAGResponse, 
+        new_file_id: str, 
+        new_content_chunks: List[str],
+        db: Session
+    ) -> Optional[RAGResponse]:
+        """Enhance a cached response with new relevant content"""
+        try:
+            # Get new embeddings for the cached query against new content
+            new_search_results = await self._search_new_content_for_query(
+                cached_response.query, new_file_id, new_content_chunks, db
+            )
+            
+            if not new_search_results:
+                return None
+            
+            # Merge new sources with existing ones
+            existing_sources = cached_response.sources
+            new_sources = self._format_sources(new_search_results)
+            
+            # Deduplicate and merge sources
+            all_sources = existing_sources + new_sources
+            unique_sources = self._deduplicate_sources(all_sources)
+            
+            # Limit to top sources by similarity
+            unique_sources.sort(key=lambda x: x.get("similarity", 0), reverse=True)
+            final_sources = unique_sources[:5]
+            
+            # Update response with new sources
+            enhanced_response = RAGResponse(
+                query=cached_response.query,
+                response=cached_response.response,  # Keep original response for now
+                intent=cached_response.intent,
+                confidence=min(cached_response.confidence + 0.05, 0.95),  # Slight confidence boost
+                sources=final_sources,
+                domain=cached_response.domain,
+                mode_used=cached_response.mode_used,
+                response_type=cached_response.response_type,
+                processing_time_ms=cached_response.processing_time_ms,
+                execution_id=cached_response.execution_id,
+                source_count=len(final_sources),
+                suggested_actions=cached_response.suggested_actions,
+                related_queries=cached_response.related_queries,
+                agent_workflow_triggered=cached_response.agent_workflow_triggered,
+                agent_workflow_id=cached_response.agent_workflow_id,
+                cache_hit=True,
+                metadata={
+                    **cached_response.metadata,
+                    "enhanced_with_new_content": True,
+                    "enhancement_timestamp": datetime.utcnow().isoformat()
+                }
+            )
+            
+            return enhanced_response
+            
+        except Exception as e:
+            print(f"Error enhancing cached response: {e}")
+            return None
+    
+    async def _search_new_content_for_query(
+        self, 
+        query: str, 
+        new_file_id: str, 
+        new_content_chunks: List[str],
+        db: Session
+    ) -> List[SearchResult]:
+        """Search new content specifically for a cached query"""
+        try:
+            # Generate query embedding
+            query_embedding = self.embeddings_model.encode([query])[0]
+            
+            # Get embeddings for new content chunks from database
+            result = db.execute(
+                text("""
+                    SELECT e.id, e.content_text, e.embedding, e.chunk_index,
+                           f.original_filename, f.content_type, f.domain
+                    FROM embeddings e
+                    JOIN files f ON e.source_id = f.id
+                    WHERE e.source_id = :file_id
+                    ORDER BY e.chunk_index
+                """),
+                {"file_id": new_file_id}
+            )
+            
+            new_embeddings_data = result.fetchall()
+            search_results = []
+            
+            for row in new_embeddings_data:
+                try:
+                    # Parse stored embedding
+                    if isinstance(row.embedding, str):
+                        import json
+                        embedding_list = json.loads(row.embedding)
+                    else:
+                        embedding_list = row.embedding
+                    stored_embedding = np.array(embedding_list, dtype=np.float32)
+                    
+                    # Calculate similarity
+                    similarity = np.dot(query_embedding, stored_embedding) / (
+                        np.linalg.norm(query_embedding) * np.linalg.norm(stored_embedding)
+                    )
+                    
+                    if similarity >= 0.3:  # Minimum threshold for relevance
+                        search_results.append(SearchResult(
+                            content=row.content_text,
+                            metadata={
+                                "title": row.original_filename,
+                                "content_type": row.content_type,
+                                "chunk_index": row.chunk_index
+                            },
+                            similarity=float(similarity),
+                            domain=row.domain,
+                            source_id=new_file_id
+                        ))
+                        
+                except Exception as e:
+                    print(f"Error processing embedding for new content search: {e}")
+                    continue
+            
+            # Sort by similarity and return top results
+            search_results.sort(key=lambda x: x.similarity, reverse=True)
+            return search_results[:3]  # Top 3 relevant chunks from new content
+            
+        except Exception as e:
+            print(f"Error searching new content for query: {e}")
+            return []
+    
+    def _deduplicate_sources(self, sources: List[Dict]) -> List[Dict]:
+        """Remove duplicate sources based on source_id and chunk_index"""
+        seen = set()
+        unique_sources = []
+        
+        for source in sources:
+            source_key = f"{source.get('id', '')}_{source.get('chunk_index', 0)}"
+            if source_key not in seen:
+                seen.add(source_key)
+                unique_sources.append(source)
+        
+        return unique_sources
+        
+    def invalidate_cache_for_domain(self, domain: str):
+        """Invalidate all cached responses for a specific domain (fallback method)"""
+        # Update domain timestamp
+        self.domain_last_updated[domain] = datetime.utcnow()
+        
+        # Remove all cache entries for this domain
+        keys_to_remove = []
+        for cache_key, cache_data in self.response_cache.items():
+            if cache_data.get("domain") == domain:
+                keys_to_remove.append(cache_key)
+        
+        for key in keys_to_remove:
+            del self.response_cache[key]
+        
+        print(f"Cache invalidated for domain '{domain}': removed {len(keys_to_remove)} cached responses")
+    
+    def invalidate_cache_by_source_id(self, source_id: str):
+        """Invalidate cached responses that used a specific source (for when files are deleted/updated)"""
+        keys_to_remove = []
+        for cache_key, cache_data in self.response_cache.items():
+            source_ids = cache_data.get("source_ids", set())
+            if source_id in source_ids:
+                keys_to_remove.append(cache_key)
+        
+        for key in keys_to_remove:
+            del self.response_cache[key]
+        
+        print(f"Cache invalidated for source '{source_id}': removed {len(keys_to_remove)} cached responses")
+    
+    def invalidate_all_cache(self):
+        """Invalidate all cached responses"""
+        cache_size = len(self.response_cache)
+        self.response_cache.clear()
+        self.domain_last_updated.clear()
+        print(f"All cache invalidated: removed {cache_size} cached responses")
+    
+    def _is_cache_valid(self, cache_data: Dict, domain: str) -> bool:
+        """Check if cached response is still valid"""
+        cache_timestamp = cache_data.get("timestamp")
+        if not cache_timestamp:
+            return False
+        
+        # Check TTL expiration
+        age_seconds = (datetime.utcnow() - cache_timestamp).total_seconds()
+        if age_seconds > self.cache_ttl_seconds:
+            return False
+        
+        # Check if domain was updated after cache entry
+        domain_updated = self.domain_last_updated.get(domain)
+        if domain_updated and cache_timestamp < domain_updated:
+            return False
+        
+        return True
+    
+    def _cleanup_expired_cache(self):
+        """Remove expired cache entries"""
+        current_time = datetime.utcnow()
+        keys_to_remove = []
+        
+        for cache_key, cache_data in self.response_cache.items():
+            cache_timestamp = cache_data.get("timestamp")
+            if cache_timestamp:
+                age_seconds = (current_time - cache_timestamp).total_seconds()
+                if age_seconds > self.cache_ttl_seconds:
+                    keys_to_remove.append(cache_key)
+        
+        for key in keys_to_remove:
+            del self.response_cache[key]
+        
+        if keys_to_remove:
+            print(f"Cleaned up {len(keys_to_remove)} expired cache entries")
+
     async def process_query(self, request: RAGRequest, db: Session) -> RAGResponse:
         """Enhanced query processing with multi-mode support"""
         start_time = time.time()
         execution_id = str(uuid.uuid4())
         
+        # Clean up expired cache entries periodically
+        self._cleanup_expired_cache()
+        
         # Check cache first
         cache_key = self._generate_cache_key(request)
         if not request.force_refresh_cache and cache_key in self.response_cache:
-            cached_response = self.response_cache[cache_key]
-            cached_response.cache_hit = True
-            cached_response.execution_id = execution_id
-            return cached_response
+            cache_data = self.response_cache[cache_key]
+            if self._is_cache_valid(cache_data, request.domain):
+                cached_response = cache_data["response"]
+                cached_response.cache_hit = True
+                cached_response.execution_id = execution_id
+                return cached_response
+            else:
+                # Remove invalid cache entry
+                del self.response_cache[cache_key]
         
         try:
             # Step 1: Intent Classification with organization context
@@ -636,8 +946,17 @@ class EnhancedRAGProcessor:
                 metadata=response_data.get("metadata", {})
             )
             
-            # Cache the response
-            self.response_cache[cache_key] = rag_response
+            # Cache the response with enhanced metadata
+            query_embedding = self.embeddings_model.encode([request.query])[0] if self.embeddings_model else None
+            source_ids = {source.get("id") for source in response_data["sources"] if source.get("id")}
+            
+            self.response_cache[cache_key] = {
+                "response": rag_response, 
+                "timestamp": datetime.utcnow(), 
+                "domain": request.domain,
+                "query_embedding": query_embedding,
+                "source_ids": source_ids
+            }
             
             # Store execution in database
             await self._store_execution(db, request, rag_response, classification_result)
@@ -709,7 +1028,7 @@ class EnhancedRAGProcessor:
         search_results: List[SearchResult],
         agent_result: Optional[WorkflowResult]
     ) -> Dict[str, Any]:
-        """Generate enhanced response with agent integration"""
+        """Generate enhanced response with LLM integration"""
         
         # If agent workflow was triggered, use its response
         if agent_result:
@@ -733,15 +1052,67 @@ class EnhancedRAGProcessor:
         # Generate context from results
         context = self._generate_context(search_results)
         
-        # Select template and generate response
-        template = self.response_templates.get(classification.intent, self.response_templates["general_query"])
+        # Use LLM for response generation
+        try:
+            from llm_service import get_llm_service
+            llm_service = get_llm_service()
+            
+            print(f"LLM service available: {llm_service.is_available()}")
+            
+            if llm_service.is_available():
+                # Generate response using LLM
+                llm_response = llm_service.generate_response(
+                    query=request.query,
+                    context=context,
+                    sources=sources,
+                    intent=classification.intent
+                )
+                
+                print(f"LLM response generated: {llm_response[:100]}...")
+                
+                # Boost confidence when using LLM
+                confidence = min(classification.confidence + 0.2, 0.95)
+                
+                return {
+                    "response": llm_response,
+                    "confidence": confidence,
+                    "response_type": ResponseType.GENERATED,
+                    "sources": sources,
+                    "suggested_actions": self._generate_suggested_actions(classification.intent),
+                    "related_queries": self._generate_related_queries(search_results),
+                    "metadata": {"classification": classification.metadata, "llm_used": True}
+                }
+            else:
+                print("LLM service not available, using template response")
+                # Fallback to template-based response
+                return self._generate_template_response(request, classification, sources, context)
+                
+        except Exception as e:
+            print(f"LLM generation failed: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to template-based response
+            return self._generate_template_response(request, classification, sources, context)
+    
+    def _generate_template_response(self, request: RAGRequest, classification: ClassificationResult, sources: List[Dict], context: str) -> Dict[str, Any]:
+        """Fallback template-based response generation with concise format"""
         
-        response = template.format(
-            context=context,
-            confidence=int(classification.confidence * 100),
-            mode=request.mode.value,
-            sources="\n".join([f"- {s['title']}" for s in sources])
-        )
+        # Generate a concise response based on context
+        if not context.strip():
+            response = "I couldn't find specific information to answer your question. Please try rephrasing or providing more details."
+        else:
+            # Extract key information for a concise response
+            sentences = context.split('. ')
+            key_info = '. '.join(sentences[:2])  # First 2 sentences
+            
+            if len(key_info) > 250:
+                key_info = key_info[:250] + "..."
+            
+            response = f"Based on the available information: {key_info}"
+            
+            # Add simple source reference if available
+            if sources and len(sources) > 0:
+                response += f" (Source: {sources[0]['title']})"
         
         return {
             "response": response,
@@ -749,34 +1120,94 @@ class EnhancedRAGProcessor:
             "response_type": ResponseType.GENERATED,
             "sources": sources,
             "suggested_actions": self._generate_suggested_actions(classification.intent),
-            "related_queries": self._generate_related_queries(search_results),
-            "metadata": {"classification": classification.metadata}
+            "related_queries": self._generate_related_queries([]),
+            "metadata": {"classification": classification.metadata, "llm_used": False}
         }
     
     def _format_sources(self, results: List[SearchResult]) -> List[Dict]:
-        """Format search results as sources"""
+        """Format search results as sources with deduplication and expandable content"""
         sources = []
+        seen_sources = set()
+        
         for result in results:
-            sources.append({
-                "id": result.source_id,
-                "title": result.metadata.get("title", "Document"),
-                "content": result.content[:200] + "..." if len(result.content) > 200 else result.content,
-                "domain": result.domain,
-                "similarity": result.similarity,
-                "url": result.metadata.get("url")
-            })
+            # Create unique identifier for deduplication
+            source_key = f"{result.source_id}_{result.metadata.get('chunk_index', 0)}"
+            
+            if source_key not in seen_sources:
+                seen_sources.add(source_key)
+                
+                # Get better title from filename
+                title = result.metadata.get("title", "Document")
+                if title.endswith('.pdf'):
+                    title = title[:-4]  # Remove .pdf extension
+                
+                # Add chunk info if multiple chunks from same file
+                chunk_index = result.metadata.get("chunk_index", 0)
+                if chunk_index > 0:
+                    title = f"{title} (Part {chunk_index + 1})"
+                
+                # Clean up the content for better readability
+                clean_content = result.content.replace('\n', ' ').strip()
+                
+                # Create a concise preview for the citation
+                preview_content = clean_content[:150] + "..." if len(clean_content) > 150 else clean_content
+                
+                # Create a longer excerpt for modal/expansion
+                excerpt_content = clean_content[:500] + "..." if len(clean_content) > 500 else clean_content
+                
+                sources.append({
+                    "id": result.source_id,
+                    "title": title,
+                    "preview": preview_content,  # Short preview for inline display
+                    "excerpt": excerpt_content,  # Medium excerpt for modal
+                    "full_content": result.content,  # Complete content for detailed view
+                    "domain": result.domain,
+                    "similarity": round(result.similarity, 3),
+                    "confidence_score": f"{round(result.similarity * 100)}%",
+                    "url": result.metadata.get("url"),
+                    "chunk_index": chunk_index,
+                    "content_length": len(result.content),
+                    "word_count": len(result.content.split()),
+                    "expandable": True,  # Flag to indicate this source can be expanded
+                    "citation_id": f"cite_{len(sources) + 1}"  # Unique citation identifier
+                })
+        
         return sources
     
     def _generate_context(self, results: List[SearchResult]) -> str:
-        """Generate context from search results"""
+        """Generate focused context from search results for LLM processing"""
         if not results:
             return "No relevant information found."
         
-        context_parts = []
-        for result in results[:3]:  # Top 3 results
-            context_parts.append(result.content[:300])
+        # Group results by source to avoid fragmentation
+        source_groups = {}
+        for result in results:
+            source_id = result.source_id
+            if source_id not in source_groups:
+                source_groups[source_id] = []
+            source_groups[source_id].append(result)
         
-        return "\n\n".join(context_parts)
+        context_parts = []
+        for source_id, source_results in source_groups.items():
+            # Sort by chunk index if available
+            source_results.sort(key=lambda x: x.metadata.get('chunk_index', 0))
+            
+            # Get the most relevant content from this source
+            best_result = max(source_results, key=lambda x: x.similarity)
+            content = best_result.content.strip()
+            
+            # Add source title for LLM reference
+            title = best_result.metadata.get("title", "Document")
+            if title.endswith('.pdf'):
+                title = title[:-4]
+            
+            # Keep content focused but sufficient for LLM understanding
+            if len(content) > 600:
+                content = content[:600] + "..."
+            
+            context_parts.append(f"From {title}:\n{content}")
+        
+        return "\n\n".join(context_parts[:3])  # Max 3 sources for focused context
     
     def _generate_suggested_actions(self, intent: str) -> List[str]:
         """Generate suggested actions based on intent"""

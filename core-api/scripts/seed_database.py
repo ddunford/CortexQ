@@ -165,7 +165,7 @@ def seed_roles(db):
             "name": "user",
             "description": "Standard user with basic access",
             "permissions": [
-                "chat:read", "chat:write", "files:read", "files:write"
+                "chat:read", "chat:write", "files:read", "files:write", "analytics:read"
             ],
             "domain_access": ["general"]
         },
@@ -233,7 +233,7 @@ def seed_role_permissions(db):
             "analytics:read", "admin:all"
         ],
         "user": [
-            "chat:read", "chat:write", "files:read", "files:write"
+            "chat:read", "chat:write", "files:read", "files:write", "analytics:read"
         ],
         "viewer": [
             "chat:read", "files:read"

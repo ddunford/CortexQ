@@ -19,11 +19,13 @@ import {
   Download,
   Eye,
   Edit,
-  Trash2
+  Trash2,
+  Send
 } from 'lucide-react';
 import Card, { CardHeader, CardTitle, CardContent } from '../ui/Card';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
+import CitationText from '../ui/CitationText';
 import { Domain, Document, SearchResult, AnalyticsMetrics, ConnectorConfig } from '../../types';
 import { apiClient } from '../../utils/api';
 
@@ -34,6 +36,15 @@ interface DomainWorkspaceProps {
 }
 
 type TabType = 'knowledge' | 'chat' | 'search' | 'sources' | 'analytics' | 'settings';
+
+interface ChatMessage {
+  id: string;
+  type: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+  sources?: any[];
+  confidence?: number;
+}
 
 const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   domain,
@@ -51,6 +62,17 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   // File upload state
   const [uploading, setUploading] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  
+  // Reindexing state
+  const [reindexing, setReindexing] = useState(false);
+  const [processingStatus, setProcessingStatus] = useState<any>(null);
+
+  // Chat state
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const chatContainerRef = React.useRef<HTMLDivElement>(null);
 
   const tabs = [
     { id: 'knowledge', label: 'Knowledge Base', icon: FileText, description: 'Manage documents and files' },
@@ -63,7 +85,17 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
 
   useEffect(() => {
     loadWorkspaceData();
+    if (activeTab === 'knowledge') {
+      loadProcessingStatus();
+    }
   }, [domain.id, activeTab]);
+
+  // Auto-scroll chat to bottom when new messages are added
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+  }, [chatMessages]);
 
   const loadWorkspaceData = async () => {
     setLoading(true);
@@ -151,10 +183,22 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     const files = Array.from(event.target.files || []);
     if (files.length === 0) return;
 
+    console.log('=== FILE SELECT DEBUG ===');
+    console.log('Number of files selected:', files.length);
+    
+    files.forEach((file, index) => {
+      console.log(`File ${index + 1}:`, {
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        lastModified: file.lastModified
+      });
+    });
+
     setUploading(true);
     try {
       for (const file of files) {
-        console.log(`Uploading file: ${file.name}`);
+        console.log(`Uploading file: ${file.name} (size: ${file.size})`);
         const uploadResponse = await apiClient.uploadFile(file, domain.domain_name);
         if (uploadResponse.success) {
           console.log(`Successfully uploaded: ${file.name}`);
@@ -176,6 +220,127 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     }
   };
 
+  // Reindexing functions
+  const loadProcessingStatus = async () => {
+    try {
+      const response = await apiClient.request('/files/processing-status', {
+        method: 'GET',
+        params: { domain: domain.domain_name }
+      });
+      if (response.success) {
+        setProcessingStatus(response.data);
+      }
+    } catch (error) {
+      console.error('Failed to load processing status:', error);
+    }
+  };
+
+  const handleReindex = async (force: boolean = false) => {
+    if (!confirm(force ? 
+      'This will reindex ALL documents in this domain, including already processed ones. This may take several minutes. Continue?' :
+      'This will reindex unprocessed and failed documents. Continue?'
+    )) {
+      return;
+    }
+
+    setReindexing(true);
+    try {
+      const response = await apiClient.request('/files/reindex', {
+        method: 'POST',
+        body: JSON.stringify({ 
+          domain: domain.domain_name, 
+          force: force 
+        })
+      });
+      
+      if (response.success) {
+        alert(`Successfully queued ${response.data.files_queued} files for reindexing. Estimated completion: ${response.data.estimated_completion}`);
+        // Reload data to show updated status
+        await loadWorkspaceData();
+        await loadProcessingStatus();
+      } else {
+        alert(`Reindexing failed: ${response.message}`);
+      }
+    } catch (error) {
+      console.error('Reindexing failed:', error);
+      alert('Reindexing failed. Please try again.');
+    } finally {
+      setReindexing(false);
+    }
+  };
+
+  // Chat functions
+  const handleSendMessage = async () => {
+    if (!chatInput.trim() || chatLoading) return;
+
+    const userMessage: ChatMessage = {
+      id: Date.now().toString(),
+      type: 'user',
+      content: chatInput.trim(),
+      timestamp: new Date(),
+    };
+
+    setChatMessages(prev => [...prev, userMessage]);
+    setChatInput('');
+    setChatLoading(true);
+
+    try {
+      const response = await apiClient.sendMessage({
+        message: userMessage.content,
+        domain: domain.domain_name,
+        sessionId: sessionId || undefined,
+      });
+
+      if (response.success) {
+        const assistantMessage: ChatMessage = {
+          id: (Date.now() + 1).toString(),
+          type: 'assistant',
+          content: response.data.response || 'I received your message but couldn\'t generate a response.',
+          timestamp: new Date(),
+          sources: response.data.sources || [],
+          confidence: response.data.confidence || 0,
+        };
+
+        setChatMessages(prev => [...prev, assistantMessage]);
+        
+        // Set session ID if not already set
+        if (!sessionId && response.data.session_id) {
+          setSessionId(response.data.session_id);
+        }
+      } else {
+        const errorMessage: ChatMessage = {
+          id: (Date.now() + 1).toString(),
+          type: 'assistant',
+          content: `Sorry, I encountered an error: ${response.message}`,
+          timestamp: new Date(),
+        };
+        setChatMessages(prev => [...prev, errorMessage]);
+      }
+    } catch (error) {
+      console.error('Chat error:', error);
+      const errorMessage: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        type: 'assistant',
+        content: 'Sorry, I\'m having trouble connecting right now. Please try again.',
+        timestamp: new Date(),
+      };
+      setChatMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const handleChatKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  };
+
+  const formatTimestamp = (timestamp: Date) => {
+    return timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
   const renderKnowledgeBase = () => (
     <div className="space-y-6">
       {/* Header */}
@@ -189,6 +354,22 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
             Filter
           </Button>
           <Button 
+            variant="outline"
+            icon={<Brain className="h-4 w-4" />}
+            onClick={() => handleReindex(false)}
+            loading={reindexing}
+          >
+            Reindex Failed
+          </Button>
+          <Button 
+            variant="outline"
+            icon={<Activity className="h-4 w-4" />}
+            onClick={() => handleReindex(true)}
+            loading={reindexing}
+          >
+            Force Reindex All
+          </Button>
+          <Button 
             icon={<Upload className="h-4 w-4" />}
             onClick={handleUploadClick}
             loading={uploading}
@@ -197,6 +378,76 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
           </Button>
         </div>
       </div>
+
+      {/* Processing Status */}
+      {processingStatus && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Processing Status</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <h4 className="font-medium text-gray-900">Files</h4>
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between">
+                    <span>Total:</span>
+                    <span className="font-medium">{processingStatus.files?.total || 0}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Processed:</span>
+                    <span className="font-medium text-green-600">{processingStatus.files?.processed || 0}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Pending:</span>
+                    <span className="font-medium text-yellow-600">{processingStatus.files?.pending || 0}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Failed:</span>
+                    <span className="font-medium text-red-600">{processingStatus.files?.failed || 0}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <h4 className="font-medium text-gray-900">Embeddings</h4>
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between">
+                    <span>Total Embeddings:</span>
+                    <span className="font-medium">{processingStatus.embeddings?.total_embeddings || 0}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Files with Embeddings:</span>
+                    <span className="font-medium">{processingStatus.embeddings?.files_with_embeddings || 0}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <h4 className="font-medium text-gray-900">Active Jobs</h4>
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between">
+                    <span>Pending Jobs:</span>
+                    <span className="font-medium text-blue-600">{processingStatus.processing_jobs?.pending || 0}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Running Jobs:</span>
+                    <span className="font-medium text-orange-600">{processingStatus.processing_jobs?.running || 0}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            {(processingStatus.processing_jobs?.active || 0) > 0 && (
+              <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="flex items-center space-x-2">
+                  <Activity className="h-4 w-4 text-blue-600 animate-spin" />
+                  <span className="text-sm text-blue-800">
+                    Processing {processingStatus.processing_jobs.active} files in the background...
+                  </span>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -286,24 +537,100 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-lg font-semibold text-gray-900">AI Assistant</h3>
-          <p className="text-gray-600">Chat with the domain-specific AI assistant</p>
+          <p className="text-gray-600">Chat with the domain-specific AI assistant about your uploaded documents</p>
         </div>
+        {sessionId && (
+          <div className="text-sm text-gray-500">
+            Session: {sessionId.slice(0, 8)}...
+          </div>
+        )}
       </div>
 
       <Card className="h-96">
         <CardContent className="h-full flex flex-col">
-          <div className="flex-1 p-4 bg-gray-50 rounded-lg mb-4">
-            <div className="text-center text-gray-500">
-              <Brain className="h-12 w-12 mx-auto mb-2" />
-              <p>Start a conversation with the AI assistant</p>
-            </div>
+          <div 
+            ref={chatContainerRef}
+            className="flex-1 p-4 bg-gray-50 rounded-lg mb-4 overflow-y-auto space-y-3"
+          >
+            {chatMessages.length === 0 ? (
+              <div className="text-center text-gray-500 h-full flex flex-col items-center justify-center">
+                <Brain className="h-12 w-12 mx-auto mb-2" />
+                <p className="mb-2">Start a conversation with the AI assistant</p>
+                <p className="text-sm">Ask questions about your uploaded documents, search for information, or get help with domain-specific topics.</p>
+              </div>
+            ) : (
+              chatMessages.map((message) => (
+                <div
+                  key={message.id}
+                  className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`max-w-xs lg:max-w-md px-3 py-2 rounded-lg ${
+                      message.type === 'user'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white border border-gray-200 text-gray-900'
+                    }`}
+                  >
+                    {message.type === 'assistant' ? (
+                      <CitationText 
+                        content={message.content} 
+                        sources={message.sources}
+                        className="text-sm"
+                      />
+                    ) : (
+                      <p className="text-sm">{message.content}</p>
+                    )}
+                    <div className="flex items-center justify-between mt-1">
+                      <span className={`text-xs ${
+                        message.type === 'user' ? 'text-blue-100' : 'text-gray-500'
+                      }`}>
+                        {formatTimestamp(message.timestamp)}
+                      </span>
+                      {message.type === 'assistant' && message.confidence && (
+                        <span className="text-xs text-gray-500">
+                          {Math.round(message.confidence * 100)}% confident
+                        </span>
+                      )}
+                    </div>
+                    {message.sources && message.sources.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-gray-200">
+                        <p className="text-xs text-gray-500 mb-1">Sources:</p>
+                        {message.sources.slice(0, 2).map((source, idx) => (
+                          <div key={idx} className="text-xs text-gray-600">
+                            • {source.title || 'Document'}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+            {chatLoading && (
+              <div className="flex justify-start">
+                <div className="bg-white border border-gray-200 text-gray-900 max-w-xs lg:max-w-md px-3 py-2 rounded-lg">
+                  <div className="flex items-center space-x-2">
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                    <span className="text-sm">AI is thinking...</span>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
           <div className="flex space-x-2">
             <Input
               placeholder="Ask a question about this domain..."
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyPress={handleChatKeyPress}
+              disabled={chatLoading}
               fullWidth
             />
-            <Button icon={<MessageCircle className="h-4 w-4" />}>
+            <Button 
+              onClick={handleSendMessage}
+              disabled={chatLoading || !chatInput.trim()}
+              icon={<Send className="h-4 w-4" />}
+            >
               Send
             </Button>
           </div>

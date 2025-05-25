@@ -1,0 +1,349 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Web Application Security Principles
+
+## Core Security Philosophy
+**Never trust the frontend.** All security validation, authentication, and authorization must happen on the backend. The frontend is a presentation layer that can be manipulated by users.
+
+## Authentication & Authorization
+
+### 1. JWT Token Management
+Follow the patterns established in [core-api/src/auth_utils.py](mdc:core-api/src/auth_utils.py):
+
+```python
+# Always verify tokens server-side
+payload = AuthUtils.verify_token(token, "access")
+if not payload:
+    raise HTTPException(status_code=401, detail="Invalid token")
+
+# Check token expiration and user status
+user = get_user_from_db(payload.get("sub"))
+if not user or not user.is_active:
+    raise HTTPException(status_code=401, detail="User not found or inactive")
+```
+
+### 2. Permission-Based Access Control
+Use the RBAC system from [core-api/src/main.py](mdc:core-api/src/main.py):
+
+```python
+# Always check permissions before allowing actions
+@app.post("/sensitive-endpoint")
+async def sensitive_action(
+    current_user: dict = Depends(require_permission("resource:action")),
+    db: Session = Depends(get_db)
+):
+    # Permission already verified by dependency
+    pass
+
+# For dynamic permission checks
+if not PermissionManager.has_permission(db, user_id, "files:write"):
+    raise HTTPException(status_code=403, detail="Permission denied")
+```
+
+### 3. Multi-Tenant Security
+Implement organization isolation as shown in file upload endpoints:
+
+```python
+# Always get user's organization context
+org_result = db.execute(
+    text("""
+        SELECT om.organization_id, o.slug
+        FROM organization_members om
+        JOIN organizations o ON om.organization_id = o.id
+        WHERE om.user_id = :user_id AND om.is_active = true
+        LIMIT 1
+    """),
+    {"user_id": current_user["id"]}
+).fetchone()
+
+if not org_result:
+    raise HTTPException(status_code=403, detail="User not associated with any organization")
+
+# Include organization_id in all data queries
+WHERE organization_id = :organization_id
+```
+
+## Input Validation & Sanitization
+
+### 1. File Upload Security
+Implement content-based validation as demonstrated in [core-api/src/main.py](mdc:core-api/src/main.py):
+
+```python
+def detect_file_type_from_content(content: bytes, filename: str) -> tuple[str, bool]:
+    """Validate file type using magic bytes, not frontend headers"""
+    
+    # Check magic bytes (file signatures)
+    file_signatures = {
+        b'%PDF': 'application/pdf',
+        b'PK\x03\x04': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    }
+    
+    # Validate content structure for text files
+    try:
+        text_content = content.decode('utf-8')
+        # Additional validation logic
+    except UnicodeDecodeError:
+        return "application/octet-stream", False
+```
+
+### 2. Input Sanitization Rules
+- **SQL Injection Prevention**: Always use parameterized queries
+- **XSS Prevention**: Sanitize all user inputs before storage/display
+- **Path Traversal Prevention**: Validate file paths and names
+- **Size Limits**: Enforce file size and request size limits
+
+```python
+# Good: Parameterized query
+db.execute(
+    text("SELECT * FROM users WHERE id = :user_id"),
+    {"user_id": user_id}
+)
+
+# Bad: String concatenation (vulnerable to SQL injection)
+# db.execute(f"SELECT * FROM users WHERE id = '{user_id}'")
+
+# File path validation
+if not str(resolved_file_path).startswith(str(resolved_org_path)):
+    raise HTTPException(status_code=403, detail="Path traversal attempt detected")
+```
+
+## Data Protection
+
+### 1. Encryption Standards
+- **Passwords**: Use bcrypt with proper salt rounds
+- **Sensitive Data**: Encrypt at rest and in transit
+- **API Keys**: Store securely, never in code
+
+```python
+# Password hashing
+password_hash = AuthUtils.hash_password(password)
+
+# Password verification
+is_valid = AuthUtils.verify_password(plain_password, stored_hash)
+```
+
+### 2. Data Isolation
+- **Organization Boundaries**: Every query must include organization context
+- **User Data Separation**: Users can only access their organization's data
+- **Domain Access Control**: Check domain permissions for all operations
+
+## Audit & Monitoring
+
+### 1. Comprehensive Logging
+Use the audit system from [core-api/src/auth_utils.py](mdc:core-api/src/auth_utils.py):
+
+```python
+# Log all security-relevant events
+AuditLogger.log_event(
+    db, "file_upload", user_id, "files", "create",
+    f"Uploaded file {filename}",
+    {"file_id": file_id, "organization_id": org_id}
+)
+
+# Log authentication events
+AuditLogger.log_authentication(
+    db, user_id, "login", success=True,
+    details={"ip_address": request.client.host}
+)
+```
+
+### 2. Security Monitoring
+- **Failed Login Attempts**: Track and rate limit
+- **Permission Violations**: Log and alert on suspicious activity
+- **File Upload Anomalies**: Monitor for malicious file uploads
+- **API Rate Limiting**: Prevent abuse and DoS attacks
+
+## Session Management
+
+### 1. Secure Session Handling
+Follow patterns from [core-api/src/auth_utils.py](mdc:core-api/src/auth_utils.py):
+
+```python
+# Create secure sessions with expiration
+access_token, refresh_token = session_manager.create_session(db, user_id)
+
+# Invalidate sessions on logout
+session_manager.invalidate_session(db, session_id)
+
+# Check session validity
+if not session_manager.is_session_valid(db, session_id):
+    raise HTTPException(status_code=401, detail="Session expired")
+```
+
+### 2. Token Security
+- **Short-lived Access Tokens**: 15-30 minutes maximum
+- **Secure Refresh Tokens**: Longer-lived but revocable
+- **Token Rotation**: Refresh tokens should be single-use
+- **Secure Storage**: Use httpOnly cookies for web clients
+
+## API Security
+
+### 1. Endpoint Protection
+```python
+# Always require authentication
+@app.post("/api/endpoint")
+async def protected_endpoint(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    # Endpoint logic here
+    pass
+
+# Add specific permission requirements
+@app.post("/admin/endpoint")
+async def admin_endpoint(
+    current_user: dict = Depends(require_permission("admin:access")),
+    db: Session = Depends(get_db)
+):
+    # Admin-only logic here
+    pass
+```
+
+### 2. CORS Configuration
+```python
+# Restrictive CORS for production
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://yourdomain.com"],  # Never use "*" in production
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["*"],
+)
+```
+
+## Error Handling
+
+### 1. Secure Error Messages
+```python
+# Good: Generic error message
+raise HTTPException(status_code=401, detail="Authentication failed")
+
+# Bad: Reveals system information
+# raise HTTPException(status_code=401, detail="User 'admin' not found in database table 'users'")
+```
+
+### 2. Logging vs User Messages
+- **Log detailed errors** for debugging (server-side only)
+- **Return generic messages** to users
+- **Never expose stack traces** to end users
+- **Use correlation IDs** to link user reports to detailed logs
+
+## Security Headers
+
+### 1. Essential Headers
+```python
+# Add security headers to all responses
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+```
+
+## Database Security
+
+### 1. Connection Security
+- **Use connection pooling** with proper limits
+- **Encrypt database connections** (SSL/TLS)
+- **Principle of least privilege** for database users
+- **Regular security updates** for database software
+
+### 2. Query Security
+```python
+# Always use parameterized queries
+result = db.execute(
+    text("""
+        SELECT f.* FROM files f
+        WHERE f.organization_id = :org_id 
+        AND f.domain = :domain
+        AND f.uploaded_by = :user_id
+    """),
+    {
+        "org_id": organization_id,
+        "domain": domain,
+        "user_id": user_id
+    }
+)
+```
+
+## File Storage Security
+
+### 1. Secure File Handling
+Based on MinIO integration in [core-api/src/storage_utils.py](mdc:core-api/src/storage_utils.py):
+
+```python
+# Organize files by organization for isolation
+object_key = f"{org_slug}/{domain}/{file_id}/{safe_filename}"
+
+# Generate presigned URLs with expiration
+download_url = minio_storage.generate_presigned_url(
+    object_key=object_key,
+    expires_in=3600  # 1 hour maximum
+)
+
+# Validate file content, not just extension
+detected_type, is_valid = detect_file_type_from_content(content, filename)
+```
+
+## Security Checklist
+
+### Before Deploying Any Endpoint:
+- [ ] Authentication required?
+- [ ] Permissions checked?
+- [ ] Input validation implemented?
+- [ ] Organization isolation enforced?
+- [ ] Audit logging added?
+- [ ] Error handling secure?
+- [ ] Rate limiting considered?
+- [ ] File uploads validated by content?
+- [ ] SQL injection prevention verified?
+- [ ] XSS prevention implemented?
+
+### Regular Security Reviews:
+- [ ] Update dependencies regularly
+- [ ] Review audit logs for anomalies
+- [ ] Test authentication flows
+- [ ] Verify permission boundaries
+- [ ] Check for information disclosure
+- [ ] Validate multi-tenant isolation
+- [ ] Test file upload security
+- [ ] Review API rate limits
+
+## Common Vulnerabilities to Avoid
+
+### 1. Authentication Bypass
+```python
+# Bad: Trusting frontend authentication state
+if request.headers.get("X-User-Authenticated") == "true":
+    # Never trust frontend headers for authentication
+
+# Good: Always verify server-side
+current_user = await get_current_user(credentials)
+```
+
+### 2. Authorization Bypass
+```python
+# Bad: Checking permissions in frontend only
+# Frontend: if (user.role === 'admin') showAdminButton()
+
+# Good: Always check on backend
+if not PermissionManager.has_permission(db, user_id, "admin:access"):
+    raise HTTPException(status_code=403, detail="Access denied")
+```
+
+### 3. Data Leakage
+```python
+# Bad: Returning sensitive data
+return {"user": user, "password_hash": user.password_hash}
+
+# Good: Return only necessary data
+return {"user": {"id": user.id, "email": user.email, "name": user.name}}
+```
+
+This security framework ensures that the Enterprise RAG system maintains enterprise-grade security standards while providing a robust foundation for secure development practices.

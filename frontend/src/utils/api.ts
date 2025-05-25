@@ -43,9 +43,13 @@ class ApiClient {
   ): Promise<ApiResponse<T>> {
     const url = `${API_BASE_URL}${endpoint}`;
     const headers: HeadersInit = {
-      'Content-Type': 'application/json',
       ...options.headers,
     };
+
+    // Only set Content-Type for non-FormData requests
+    if (!(options.body instanceof FormData)) {
+      headers['Content-Type'] = 'application/json';
+    }
 
     if (this.token) {
       headers.Authorization = `Bearer ${this.token}`;
@@ -229,13 +233,33 @@ class ApiClient {
 
   // File Management APIs
   async uploadFile(file: File, domain: string): Promise<ApiResponse<Document>> {
+    console.log('=== UPLOAD FILE DEBUG ===');
+    console.log('File object:', file);
+    console.log('File name:', file.name);
+    console.log('File size:', file.size);
+    console.log('File type:', file.type);
+    console.log('File lastModified:', file.lastModified);
+    
+    // Check if file is readable
+    if (file.size === 0) {
+      console.error('ERROR: File size is 0!');
+    }
+    
     const formData = new FormData();
     formData.append('file', file);
     formData.append('domain', domain);
+    
+    console.log('FormData created');
+    console.log('FormData entries:');
+    for (const [key, value] of formData.entries()) {
+      console.log(`  ${key}:`, value);
+      if (value instanceof File) {
+        console.log(`    File name: ${value.name}, size: ${value.size}`);
+      }
+    }
 
     return this.request('/files/upload', {
       method: 'POST',
-      headers: {}, // Remove Content-Type to let browser set it for FormData
       body: formData,
     });
   }

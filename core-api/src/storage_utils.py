@@ -165,7 +165,12 @@ class MinIOStorageManager:
             logger.error(f"Error generating presigned URL: {e}")
             return ""
     
-    async def download_file(self, object_key: str) -> Optional[bytes]:
+    def generate_presigned_url(self, object_key: str, expires_in: int = 3600) -> str:
+        """Generate presigned URL for file access (alias for get_file_url)"""
+        expires = timedelta(seconds=expires_in)
+        return self.get_file_url(object_key, expires)
+    
+    def download_file(self, object_key: str) -> Optional[bytes]:
         """Download file from MinIO"""
         try:
             response = self.client.get_object(

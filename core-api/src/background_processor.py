@@ -18,7 +18,7 @@ import io
 
 # Optional imports for document processing
 try:
-    import PyPDF2
+    import pypdf
     PDF_AVAILABLE = True
 except ImportError:
     PDF_AVAILABLE = False
@@ -45,12 +45,21 @@ class FileProcessor:
         # self.settings = settings
         # self.embedding_service = EmbeddingService(settings)
         self.vector_store = None
+        self.embeddings_service = None
         
     async def initialize(self):
         """Initialize the processor"""
-        # await self.embedding_service.initialize()
-        # Initialize vector store when needed
-        pass
+        try:
+            # Use the centralized embeddings service
+            from embeddings_service import get_embeddings_service
+            self.embeddings_service = get_embeddings_service()
+            if self.embeddings_service.is_available():
+                logger.info("Background processor initialized with embeddings service")
+            else:
+                logger.warning("Embeddings service not available")
+        except ImportError as e:
+            logger.warning(f"Could not import embeddings service: {e}")
+            self.embeddings_service = None
         
     def extract_text_from_file(self, file_path: str, content_type: str, content: bytes) -> str:
         """Extract text from different file types"""
@@ -73,11 +82,11 @@ class FileProcessor:
     def _extract_pdf_text(self, content: bytes) -> str:
         """Extract text from PDF"""
         if not PDF_AVAILABLE:
-            logger.warning("PyPDF2 not available, cannot extract PDF text")
+            logger.warning("pypdf not available, cannot extract PDF text")
             return ""
         try:
             pdf_file = io.BytesIO(content)
-            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            pdf_reader = pypdf.PdfReader(pdf_file)
             text = ""
             for page in pdf_reader.pages:
                 text += page.extract_text() + "\n"
@@ -130,7 +139,7 @@ class FileProcessor:
         return chunks
     
     async def process_file(self, file_id: str, db: Session) -> bool:
-        """Process a single file with multi-tenant isolation"""
+        """Process a single file with multi-tenant isolation and MinIO support"""
         try:
             # Get file record with organization context
             file_result = db.execute(
@@ -147,41 +156,35 @@ class FileProcessor:
                 logger.error(f"File {file_id} not found")
                 return False
             
-            # Verify file path exists and is within organization boundaries
-            file_path = Path(file_result.file_path)
-            if not file_path.exists():
-                logger.error(f"File not found on disk: {file_path}")
-                return False
-            
-            # Security check: ensure file is within organization's storage directory
-            storage_base = Path(os.getenv("FILE_STORAGE_PATH", "./uploads"))
-            expected_org_path = storage_base / file_result.org_slug
-            
-            try:
-                # Resolve paths to prevent directory traversal attacks
-                resolved_file_path = file_path.resolve()
-                resolved_org_path = expected_org_path.resolve()
-                
-                if not str(resolved_file_path).startswith(str(resolved_org_path)):
-                    logger.error(f"Security violation: File {file_id} outside organization boundary")
-                    return False
-            except Exception as e:
-                logger.error(f"Path resolution error for file {file_id}: {e}")
-                return False
-            
             logger.info(f"Processing file: {file_result.original_filename} (Org: {file_result.org_slug}, Domain: {file_result.domain})")
             
-            # Read file content from disk
+            # Get file content from MinIO storage
             try:
-                with open(file_path, 'rb') as f:
-                    file_content = f.read()
+                from storage_utils import minio_storage
+                
+                if file_result.storage_type == 'minio' and file_result.object_key:
+                    # Download file content from MinIO
+                    file_content = minio_storage.download_file(file_result.object_key)
+                    if not file_content:
+                        logger.error(f"Failed to download file from MinIO: {file_result.object_key}")
+                        return False
+                else:
+                    # Legacy local file support (fallback)
+                    file_path = Path(file_result.file_path)
+                    if not file_path.exists():
+                        logger.error(f"File not found: {file_path}")
+                        return False
+                    
+                    with open(file_path, 'rb') as f:
+                        file_content = f.read()
+                        
             except Exception as e:
-                logger.error(f"Failed to read file {file_path}: {e}")
+                logger.error(f"Failed to read file content for {file_id}: {e}")
                 return False
             
             # Extract text based on content type
             text_content = self.extract_text_from_file(
-                str(file_path), 
+                file_result.object_key or file_result.file_path, 
                 file_result.content_type, 
                 file_content
             )
@@ -211,10 +214,13 @@ class FileProcessor:
             # Generate embeddings for each chunk with organization isolation
             for i, chunk in enumerate(chunks):
                 try:
-                    # TODO: Replace with actual embedding service call
-                    # embedding = await self.embedding_service.generate_embedding(chunk)
-                    # For now, create a mock embedding
-                    embedding = [0.1] * 384  # Mock 384-dimensional embedding
+                    # Generate real embedding using the embeddings service
+                    if self.embeddings_service and self.embeddings_service.is_available():
+                        embedding = self.embeddings_service.encode(chunk)
+                        logger.info(f"Generated real embedding for chunk {i} of file {file_result.original_filename} (dimension: {len(embedding)})")
+                    else:
+                        logger.warning("Embeddings service not available, using mock embedding")
+                        embedding = [0.1] * 384  # Mock 384-dimensional embedding
                     
                     # Store embedding with organization and domain context
                     embedding_id = str(uuid.uuid4())
@@ -260,6 +266,30 @@ class FileProcessor:
             
             db.commit()
             logger.info(f"Successfully processed file: {file_result.original_filename} (Org: {file_result.org_slug})")
+            
+            # Smart cache update for this domain since new embeddings were generated
+            try:
+                # Import here to avoid circular imports
+                from main import rag_processor
+                if rag_processor:
+                    # Use smart cache update instead of full invalidation
+                    await rag_processor.smart_cache_update_for_new_content(
+                        domain=file_result.domain,
+                        new_file_id=str(file_result.id),
+                        new_content_chunks=chunks,
+                        db=db
+                    )
+                    logger.info(f"Smart cache update completed for domain '{file_result.domain}' after processing file {file_result.original_filename}")
+            except Exception as e:
+                logger.warning(f"Failed to update cache after file processing: {e}")
+                # Fallback to domain invalidation if smart update fails
+                try:
+                    if rag_processor:
+                        rag_processor.invalidate_cache_for_domain(file_result.domain)
+                        logger.info(f"Fallback: Cache invalidated for domain '{file_result.domain}'")
+                except:
+                    pass
+            
             return True
             
         except Exception as e:
