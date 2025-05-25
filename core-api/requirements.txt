@@ -47,6 +47,9 @@ pypdf>=3.15.0
 python-docx>=0.8.11
 openpyxl>=3.1.0
 
+# Object storage
+minio>=7.2.0
+
 # Async processing
 asyncio>=3.4.3
 

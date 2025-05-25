@@ -55,10 +55,38 @@ class ApiClient {
       const response = await fetch(url, {
         ...options,
         headers,
+        signal: AbortSignal.timeout(30000),
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+        try {
+          const errorData = await response.json();
+          if (errorData.detail) {
+            errorMessage = errorData.detail;
+          } else if (errorData.message) {
+            errorMessage = errorData.message;
+          }
+        } catch {
+          // If we can't parse the error response, use the status text
+        }
+
+        if (response.status === 401) {
+          this.clearToken();
+          errorMessage = 'Authentication failed. Please log in again.';
+        } else if (response.status === 403) {
+          errorMessage = 'Access denied. You don\'t have permission for this action.';
+        } else if (response.status === 404) {
+          errorMessage = 'Resource not found.';
+        } else if (response.status >= 500) {
+          errorMessage = 'Server error. Please try again later.';
+        }
+
+        return {
+          data: null as any,
+          success: false,
+          message: errorMessage,
+        };
       }
 
       const data = await response.json();
@@ -68,10 +96,21 @@ class ApiClient {
       };
     } catch (error) {
       console.error('API request failed:', error);
+      
+      let errorMessage = 'Unknown error occurred';
+      
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        errorMessage = 'Connection failed. Please check your internet connection or VPN.';
+      } else if (error instanceof DOMException && error.name === 'AbortError') {
+        errorMessage = 'Request timed out. Please try again.';
+      } else if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+
       return {
         data: null as any,
         success: false,
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: errorMessage,
       };
     }
   }
@@ -87,9 +126,7 @@ class ApiClient {
   async register(userData: {
     email: string;
     password: string;
-    username: string;
-    firstName?: string;
-    lastName?: string;
+    full_name?: string;
   }): Promise<ApiResponse<{ access_token: string; user: User }>> {
     return this.request('/auth/register', {
       method: 'POST',
@@ -203,8 +240,8 @@ class ApiClient {
     });
   }
 
-  async getFiles(domainId?: string): Promise<ApiResponse<Document[]>> {
-    const endpoint = domainId ? `/files?domain_id=${domainId}` : '/files';
+  async getFiles(domain?: string): Promise<ApiResponse<Document[]>> {
+    const endpoint = domain ? `/files?domain=${domain}` : '/files';
     return this.request(endpoint);
   }
 
@@ -325,6 +362,66 @@ class ApiClient {
     error_message?: string;
   }>> {
     return this.request(`/web-scraping/${crawlId}/status`);
+  }
+
+  // Organization Member Management APIs
+  async getOrganizationMembers(organizationId: string): Promise<ApiResponse<any[]>> {
+    return this.request(`/organizations/${organizationId}/members`);
+  }
+
+  async inviteOrganizationMember(organizationId: string, data: {
+    email: string;
+    role: string;
+  }): Promise<ApiResponse<any>> {
+    return this.request(`/organizations/${organizationId}/members/invite`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateOrganizationMember(organizationId: string, memberId: string, role: string): Promise<ApiResponse<any>> {
+    return this.request(`/organizations/${organizationId}/members/${memberId}?role=${role}`, {
+      method: 'PUT',
+    });
+  }
+
+  async removeOrganizationMember(organizationId: string, memberId: string): Promise<ApiResponse<void>> {
+    return this.request(`/organizations/${organizationId}/members/${memberId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // User Profile Management APIs
+  async updateUserProfile(data: {
+    full_name?: string;
+    email?: string;
+    preferences?: any;
+  }): Promise<ApiResponse<User>> {
+    return this.request('/users/me', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async changePassword(data: {
+    current_password: string;
+    new_password: string;
+  }): Promise<ApiResponse<{ message: string }>> {
+    return this.request('/users/me/password', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getUserPreferences(): Promise<ApiResponse<any>> {
+    return this.request('/users/me/preferences');
+  }
+
+  async updateUserPreferences(preferences: any): Promise<ApiResponse<any>> {
+    return this.request('/users/me/preferences', {
+      method: 'PUT',
+      body: JSON.stringify(preferences),
+    });
   }
 }
 

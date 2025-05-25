@@ -119,7 +119,15 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
                state.template?.color?.includes('pink') ? 'pink' :
                state.template?.color?.includes('blue') ? 'blue' : 'blue',
         settings: {
-          aiConfig: state.aiConfig,
+          aiConfig: {
+            provider: state.aiConfig?.provider || 'ollama',
+            model: state.aiConfig?.model || 'llama2',
+            temperature: state.aiConfig?.temperature || 0.7,
+            maxTokens: state.aiConfig?.maxTokens || 2048,
+            confidenceThreshold: state.aiConfig?.confidenceThreshold || 0.8,
+            enableStreaming: state.aiConfig?.enableStreaming || true,
+            systemPrompt: state.aiConfig?.systemPrompt || '',
+          },
           searchConfig: {
             mode: 'hybrid' as const,
             vectorWeight: 0.7,
@@ -128,8 +136,16 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
             enableFacets: true,
             enableSuggestions: true,
           },
-          dataSourceConfig: state.dataSourceConfig,
-          securityConfig: state.securityConfig,
+          dataSourceConfig: {
+            connectors: state.dataSourceConfig?.connectors || [],
+            syncSchedule: state.dataSourceConfig?.syncSchedule || { frequency: 'daily' },
+            dataRetention: state.dataSourceConfig?.dataRetention || { retentionDays: 365, autoArchive: false, autoDelete: false },
+          },
+          securityConfig: {
+            accessControl: state.securityConfig?.accessControl || 'private',
+            enableAuditLogging: state.securityConfig?.enableAuditLogging || true,
+            dataEncryption: state.securityConfig?.dataEncryption || true,
+          },
           uiConfig: {
             theme: 'light' as const,
             primaryColor: state.template?.color || '#3B82F6',
@@ -156,7 +172,7 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
               if (uploadResponse.success) {
                 console.log(`Successfully uploaded: ${file.name}`);
               } else {
-                console.error(`Failed to upload ${file.name}:`, uploadResponse.error);
+                console.error(`Failed to upload ${file.name}:`, uploadResponse.message);
               }
             } catch (error) {
               console.error(`Failed to upload file ${file.name}:`, error);

@@ -34,6 +34,7 @@ from classifiers import classifier, ClassificationResult
 from rag_processor import (
     initialize_rag_processor, rag_processor, RAGRequest, RAGResponse, RAGMode
 )
+from storage_utils import minio_storage
 # Import crawler directly to avoid dependency issues
 try:
     from ingestion.crawler import WebCrawler, CrawlScheduler
@@ -87,10 +88,9 @@ class LoginResponse(BaseModel):
     user: Dict[str, Any]
 
 class UserCreate(BaseModel):
-    username: str
     email: EmailStr
-    full_name: Optional[str] = None
     password: str
+    full_name: Optional[str] = None
     roles: Optional[List[str]] = []
 
 class UserResponse(BaseModel):
@@ -501,11 +501,34 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
             )
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
-        # Get user roles, permissions, and domains
+        # Get user roles, permissions, and domains from database
         user_id = str(user.id)
         roles = PermissionManager.get_user_roles(db, user_id)
         permissions = PermissionManager.get_user_permissions(db, user_id)
         domains = PermissionManager.get_user_domains(db, user_id)
+        
+        # If user has no roles, assign default user role
+        if not roles:
+            # Check if default user role exists, if not create it
+            default_role = db.execute(
+                text("SELECT id FROM roles WHERE name = 'user'")
+            ).fetchone()
+            
+            if default_role:
+                # Assign user role
+                db.execute(
+                    text("""
+                        INSERT INTO user_roles (user_id, role_id)
+                        VALUES (:user_id, :role_id)
+                        ON CONFLICT DO NOTHING
+                    """),
+                    {"user_id": user_id, "role_id": str(default_role.id)}
+                )
+                db.commit()
+                
+                # Refresh roles and permissions
+                roles = PermissionManager.get_user_roles(db, user_id)
+                permissions = PermissionManager.get_user_permissions(db, user_id)
         
         # Create session and tokens
         access_token, refresh_token = session_manager.create_session(
@@ -578,33 +601,34 @@ async def register(
     user_data: UserCreate,
     db: Session = Depends(get_db)
 ):
-    """Register a new user (public endpoint)"""
+    """Register a new user (public endpoint) - Email as primary identifier"""
     try:
-        # Check if user already exists
+        # Check if user already exists (email is both username and email)
         existing_user = db.execute(
-            text("SELECT id FROM users WHERE username = :username OR email = :email"),
-            {"username": user_data.username, "email": user_data.email}
+            text("SELECT id FROM users WHERE email = :email"),
+            {"email": user_data.email}
         ).fetchone()
         
         if existing_user:
-            raise HTTPException(status_code=400, detail="User already exists")
+            raise HTTPException(status_code=400, detail="User with this email already exists")
         
         # Hash password
         password_hash = AuthUtils.hash_password(user_data.password)
         
-        # Create user
+        # Create user (use email as both username and email for enterprise compatibility)
         user_id = str(uuid.uuid4())
         db.execute(
             text("""
-                INSERT INTO users (id, username, email, full_name, password_hash, created_at)
-                VALUES (:id, :username, :email, :full_name, :password_hash, :created_at)
+                INSERT INTO users (id, username, email, full_name, password_hash, is_active, created_at)
+                VALUES (:id, :username, :email, :full_name, :password_hash, :is_active, :created_at)
             """),
             {
                 "id": user_id,
-                "username": user_data.username,
+                "username": user_data.email,  # Use email as username
                 "email": user_data.email,
                 "full_name": user_data.full_name,
                 "password_hash": password_hash,
+                "is_active": True,  # Explicitly set user as active
                 "created_at": datetime.utcnow()
             }
         )
@@ -628,10 +652,12 @@ async def register(
                         "role_id": str(role.id)
                     }
                 )
+            else:
+                print(f"Warning: Role '{role_name}' not found in database")
         
         db.commit()
         
-        # Get user data for response
+        # Get user data for response from database
         roles = PermissionManager.get_user_roles(db, user_id)
         permissions = PermissionManager.get_user_permissions(db, user_id)
         domains = PermissionManager.get_user_domains(db, user_id)
@@ -639,13 +665,13 @@ async def register(
         # Log user registration
         AuditLogger.log_event(
             db, "user_registration", user_id, "users", "create",
-            f"User {user_data.username} registered",
+            f"User {user_data.email} registered",
             {"roles": roles}
         )
         
         return UserResponse(
             id=user_id,
-            username=user_data.username,
+            username=user_data.email,  # Return email as username for consistency
             email=user_data.email,
             full_name=user_data.full_name,
             is_active=True,
@@ -1103,26 +1129,41 @@ async def upload_file(
         file_extension = Path(file.filename).suffix.lower()
         safe_filename = f"{file_id}{file_extension}"
         
-        # Multi-tenant storage path: /uploads/{org_slug}/{domain}/{file_id}.ext
-        storage_base = Path(os.getenv("FILE_STORAGE_PATH", "./uploads"))
-        org_storage_path = storage_base / org_slug / domain
-        org_storage_path.mkdir(parents=True, exist_ok=True)
+        # Upload to MinIO with organization isolation
+        upload_result = await minio_storage.upload_file(
+            file_content=content,
+            organization_slug=org_slug,
+            domain=domain,
+            file_id=file_id,
+            filename=file.filename,
+            content_type=file.content_type,
+            metadata={
+                "uploaded_by": current_user["id"],
+                "organization_id": organization_id,
+                "domain": domain
+            }
+        )
         
-        file_path = org_storage_path / safe_filename
+        if not upload_result["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to upload file to storage: {upload_result.get('error', 'Unknown error')}"
+            )
         
-        # Save file to disk with proper isolation
-        async with aiofiles.open(file_path, 'wb') as f:
-            await f.write(content)
+        object_key = upload_result["object_key"]
+        storage_url = upload_result["url"]
         
-        # Create file record with organization and file path
+        # Create file record with organization and MinIO object key
         db.execute(
             text("""
                 INSERT INTO files (
                     id, filename, original_filename, content_type, size_bytes,
-                    file_hash, file_path, domain, organization_id, uploaded_by, created_at
+                    file_hash, file_path, domain, organization_id, uploaded_by, 
+                    storage_type, object_key, storage_url, created_at
                 ) VALUES (
                     :id, :filename, :original_filename, :content_type, :size_bytes,
-                    :file_hash, :file_path, :domain, :organization_id, :uploaded_by, :created_at
+                    :file_hash, :file_path, :domain, :organization_id, :uploaded_by,
+                    :storage_type, :object_key, :storage_url, :created_at
                 )
             """),
             {
@@ -1132,10 +1173,13 @@ async def upload_file(
                 "content_type": file.content_type,
                 "size_bytes": file_size,
                 "file_hash": file_hash,
-                "file_path": str(file_path),
+                "file_path": object_key,  # Store MinIO object key for backward compatibility
                 "domain": domain,
                 "organization_id": organization_id,
                 "uploaded_by": current_user["id"],
+                "storage_type": "minio",
+                "object_key": object_key,
+                "storage_url": storage_url,
                 "created_at": datetime.utcnow()
             }
         )
@@ -1172,7 +1216,8 @@ async def upload_file(
                 "size_bytes": file_size,
                 "domain": domain,
                 "organization_id": organization_id,
-                "file_path": str(file_path)
+                "object_key": object_key,
+                "storage_type": "minio"
             }
         )
         
@@ -1196,10 +1241,10 @@ async def upload_file(
         raise
     except Exception as e:
         db.rollback()
-        # Clean up file if it was created
+        # Clean up file if it was created in MinIO
         try:
-            if 'file_path' in locals() and Path(file_path).exists():
-                Path(file_path).unlink()
+            if 'object_key' in locals():
+                minio_storage.delete_file(object_key)
         except:
             pass
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
@@ -1285,6 +1330,91 @@ async def list_files(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list files: {str(e)}")
+
+@app.get("/files/{file_id}/download")
+async def download_file(
+    file_id: str,
+    current_user: dict = Depends(require_permission("files:read")),
+    db: Session = Depends(get_db)
+):
+    """Download file with multi-tenant security and MinIO support"""
+    try:
+        # Get user's organization for multi-tenant isolation
+        org_result = db.execute(
+            text("""
+                SELECT om.organization_id, o.slug
+                FROM organization_members om
+                JOIN organizations o ON om.organization_id = o.id
+                WHERE om.user_id = :user_id AND om.is_active = true
+                LIMIT 1
+            """),
+            {"user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not org_result:
+            raise HTTPException(status_code=403, detail="User not associated with any organization")
+        
+        organization_id = str(org_result.organization_id)
+        
+        # Get file with organization and domain access check
+        file_result = db.execute(
+            text("""
+                SELECT f.id, f.filename, f.original_filename, f.content_type, f.file_path,
+                       f.domain, f.organization_id, f.storage_type, f.object_key
+                FROM files f
+                WHERE f.id = :file_id AND f.organization_id = :organization_id
+            """),
+            {"file_id": file_id, "organization_id": organization_id}
+        ).fetchone()
+        
+        if not file_result:
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Check domain access
+        if not PermissionManager.has_domain_access(db, current_user["id"], file_result.domain):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access denied to domain: {file_result.domain}"
+            )
+        
+        # Generate secure download URL based on storage type
+        if file_result.storage_type == 'minio' and file_result.object_key:
+            # Generate presigned URL for MinIO
+            download_url = minio_storage.generate_presigned_url(
+                object_key=file_result.object_key,
+                expires_in=3600  # 1 hour expiry
+            )
+            
+            if not download_url:
+                raise HTTPException(status_code=500, detail="Failed to generate download URL")
+            
+            # Log file download
+            AuditLogger.log_event(
+                db, "file_download", current_user["id"], "files", "read",
+                f"Downloaded file {file_result.original_filename}",
+                {
+                    "file_id": file_id,
+                    "filename": file_result.original_filename,
+                    "domain": file_result.domain,
+                    "organization_id": organization_id,
+                    "storage_type": "minio"
+                }
+            )
+            
+            return {
+                "download_url": download_url,
+                "filename": file_result.original_filename,
+                "content_type": file_result.content_type,
+                "expires_in": 3600
+            }
+        else:
+            # Legacy local file support (if needed)
+            raise HTTPException(status_code=501, detail="Local file downloads not implemented")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to download file: {str(e)}")
 
 # ============================================================================
 # WEB SCRAPING ENDPOINTS
@@ -1632,15 +1762,18 @@ async def create_organization(
         )
         
         # Add creator as owner
+        member_id = str(uuid.uuid4())
         db.execute(
             text("""
-                INSERT INTO organization_members (organization_id, user_id, role, joined_at)
-                VALUES (:org_id, :user_id, 'owner', :joined_at)
+                INSERT INTO organization_members (id, organization_id, user_id, role, joined_at, is_active)
+                VALUES (:id, :org_id, :user_id, 'owner', :joined_at, :is_active)
             """),
             {
+                "id": member_id,
                 "org_id": org_id,
                 "user_id": current_user["id"],
-                "joined_at": datetime.utcnow()
+                "joined_at": datetime.utcnow(),
+                "is_active": True
             }
         )
         
@@ -1650,16 +1783,17 @@ async def create_organization(
             text("""
                 INSERT INTO organization_domains (
                     id, organization_id, domain_name, display_name, description,
-                    icon, color, created_by, created_at
+                    icon, color, created_by, is_active, created_at
                 ) VALUES (
                     :id, :org_id, 'general', 'General', 'General knowledge and documentation',
-                    'globe', 'blue', :created_by, :created_at
+                    'globe', 'blue', :created_by, :is_active, :created_at
                 )
             """),
             {
                 "id": domain_id,
                 "org_id": org_id,
                 "created_by": current_user["id"],
+                "is_active": True,
                 "created_at": datetime.utcnow()
             }
         )
@@ -1891,6 +2025,444 @@ async def list_domain_templates(
         )
         for row in result.fetchall()
     ]
+
+# ============================================================================
+# ORGANIZATION MEMBER MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@app.get("/organizations/{org_id}/members", response_model=List[OrganizationMemberResponse])
+async def list_organization_members(
+    org_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List members of an organization"""
+    # Check if user has access to this organization
+    member = db.execute(
+        text("""
+            SELECT role FROM organization_members 
+            WHERE organization_id = :org_id AND user_id = :user_id AND is_active = true
+        """),
+        {"org_id": org_id, "user_id": current_user["id"]}
+    ).fetchone()
+    
+    if not member:
+        raise HTTPException(status_code=403, detail="Access denied to organization")
+    
+    result = db.execute(
+        text("""
+            SELECT om.id, om.user_id, u.username, u.email, u.full_name, om.role,
+                   om.joined_at, u.last_login, om.is_active
+            FROM organization_members om
+            JOIN users u ON om.user_id = u.id
+            WHERE om.organization_id = :org_id AND om.is_active = true
+            ORDER BY om.role, u.username
+        """),
+        {"org_id": org_id}
+    )
+    
+    members = []
+    for row in result.fetchall():
+        # Get user permissions
+        permissions = PermissionManager.get_user_permissions(db, str(row.user_id))
+        
+        members.append(OrganizationMemberResponse(
+            id=str(row.id),
+            user_id=str(row.user_id),
+            username=row.username,
+            email=row.email,
+            full_name=row.full_name,
+            role=row.role,
+            permissions=permissions,
+            joined_at=row.joined_at.isoformat(),
+            last_active=row.last_login.isoformat() if row.last_login else None,
+            is_active=row.is_active
+        ))
+    
+    return members
+
+@app.post("/organizations/{org_id}/members/invite", response_model=InvitationResponse)
+async def invite_organization_member(
+    org_id: str,
+    invitation_data: InvitationCreate,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Invite a new member to the organization"""
+    try:
+        # Check if user has admin access to this organization
+        member = db.execute(
+            text("""
+                SELECT role FROM organization_members 
+                WHERE organization_id = :org_id AND user_id = :user_id AND is_active = true
+            """),
+            {"org_id": org_id, "user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not member or member.role not in ['owner', 'admin']:
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        # Check organization member limits
+        org_info = db.execute(
+            text("SELECT max_users FROM organizations WHERE id = :org_id"),
+            {"org_id": org_id}
+        ).fetchone()
+        
+        current_members = db.execute(
+            text("SELECT COUNT(*) as count FROM organization_members WHERE organization_id = :org_id AND is_active = true"),
+            {"org_id": org_id}
+        ).fetchone()
+        
+        if current_members.count >= org_info.max_users:
+            raise HTTPException(status_code=400, detail="Member limit reached for this organization")
+        
+        # Check if user is already a member
+        existing_member = db.execute(
+            text("""
+                SELECT om.id FROM organization_members om
+                JOIN users u ON om.user_id = u.id
+                WHERE om.organization_id = :org_id AND u.email = :email
+            """),
+            {"org_id": org_id, "email": invitation_data.email}
+        ).fetchone()
+        
+        if existing_member:
+            raise HTTPException(status_code=400, detail="User is already a member of this organization")
+        
+        # Generate invitation token
+        invitation_token = str(uuid.uuid4())
+        invitation_id = str(uuid.uuid4())
+        expires_at = datetime.utcnow() + timedelta(days=7)  # 7 days expiry
+        
+        # Create invitation record
+        db.execute(
+            text("""
+                INSERT INTO organization_invitations (
+                    id, organization_id, email, role, invited_by, invitation_token, expires_at, created_at
+                ) VALUES (
+                    :id, :org_id, :email, :role, :invited_by, :token, :expires_at, :created_at
+                )
+            """),
+            {
+                "id": invitation_id,
+                "org_id": org_id,
+                "email": invitation_data.email,
+                "role": invitation_data.role,
+                "invited_by": current_user["id"],
+                "token": invitation_token,
+                "expires_at": expires_at,
+                "created_at": datetime.utcnow()
+            }
+        )
+        
+        db.commit()
+        
+        # Log invitation
+        AuditLogger.log_event(
+            db, "member_invitation", current_user["id"], "organization_members", "invite",
+            f"Invited {invitation_data.email} to organization {org_id}",
+            {"organization_id": org_id, "email": invitation_data.email, "role": invitation_data.role}
+        )
+        
+        return InvitationResponse(
+            id=invitation_id,
+            organization_id=org_id,
+            email=invitation_data.email,
+            role=invitation_data.role,
+            invited_by=current_user["id"],
+            invitation_token=invitation_token,
+            expires_at=expires_at.isoformat(),
+            created_at=datetime.utcnow().isoformat()
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to create invitation: {str(e)}")
+
+@app.put("/organizations/{org_id}/members/{member_id}", response_model=OrganizationMemberResponse)
+async def update_organization_member(
+    org_id: str,
+    member_id: str,
+    role: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update organization member role"""
+    try:
+        # Check if user has admin access to this organization
+        admin_member = db.execute(
+            text("""
+                SELECT role FROM organization_members 
+                WHERE organization_id = :org_id AND user_id = :user_id AND is_active = true
+            """),
+            {"org_id": org_id, "user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not admin_member or admin_member.role not in ['owner', 'admin']:
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        # Get member info
+        member_info = db.execute(
+            text("""
+                SELECT om.user_id, u.username, u.email, u.full_name, u.last_login
+                FROM organization_members om
+                JOIN users u ON om.user_id = u.id
+                WHERE om.id = :member_id AND om.organization_id = :org_id
+            """),
+            {"member_id": member_id, "org_id": org_id}
+        ).fetchone()
+        
+        if not member_info:
+            raise HTTPException(status_code=404, detail="Member not found")
+        
+        # Update member role
+        db.execute(
+            text("""
+                UPDATE organization_members 
+                SET role = :role, updated_at = :updated_at
+                WHERE id = :member_id AND organization_id = :org_id
+            """),
+            {
+                "role": role,
+                "updated_at": datetime.utcnow(),
+                "member_id": member_id,
+                "org_id": org_id
+            }
+        )
+        
+        db.commit()
+        
+        # Get updated permissions
+        permissions = PermissionManager.get_user_permissions(db, str(member_info.user_id))
+        
+        # Log role update
+        AuditLogger.log_event(
+            db, "member_role_update", current_user["id"], "organization_members", "update",
+            f"Updated role for {member_info.email} to {role}",
+            {"organization_id": org_id, "member_id": member_id, "new_role": role}
+        )
+        
+        return OrganizationMemberResponse(
+            id=member_id,
+            user_id=str(member_info.user_id),
+            username=member_info.username,
+            email=member_info.email,
+            full_name=member_info.full_name,
+            role=role,
+            permissions=permissions,
+            joined_at=datetime.utcnow().isoformat(),  # This should be fetched from DB
+            last_active=member_info.last_login.isoformat() if member_info.last_login else None,
+            is_active=True
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update member: {str(e)}")
+
+@app.delete("/organizations/{org_id}/members/{member_id}")
+async def remove_organization_member(
+    org_id: str,
+    member_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Remove member from organization"""
+    try:
+        # Check if user has admin access to this organization
+        admin_member = db.execute(
+            text("""
+                SELECT role FROM organization_members 
+                WHERE organization_id = :org_id AND user_id = :user_id AND is_active = true
+            """),
+            {"org_id": org_id, "user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not admin_member or admin_member.role not in ['owner', 'admin']:
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        # Get member info for logging
+        member_info = db.execute(
+            text("""
+                SELECT u.email FROM organization_members om
+                JOIN users u ON om.user_id = u.id
+                WHERE om.id = :member_id AND om.organization_id = :org_id
+            """),
+            {"member_id": member_id, "org_id": org_id}
+        ).fetchone()
+        
+        if not member_info:
+            raise HTTPException(status_code=404, detail="Member not found")
+        
+        # Remove member (soft delete)
+        db.execute(
+            text("""
+                UPDATE organization_members 
+                SET is_active = false, updated_at = :updated_at
+                WHERE id = :member_id AND organization_id = :org_id
+            """),
+            {
+                "updated_at": datetime.utcnow(),
+                "member_id": member_id,
+                "org_id": org_id
+            }
+        )
+        
+        db.commit()
+        
+        # Log member removal
+        AuditLogger.log_event(
+            db, "member_removal", current_user["id"], "organization_members", "delete",
+            f"Removed {member_info.email} from organization {org_id}",
+            {"organization_id": org_id, "member_id": member_id}
+        )
+        
+        return {"message": "Member removed successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to remove member: {str(e)}")
+
+# ============================================================================
+# USER PROFILE MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@app.put("/users/me", response_model=UserResponse)
+async def update_user_profile(
+    profile_data: dict,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update current user's profile"""
+    try:
+        # Build update query dynamically based on provided fields
+        update_fields = []
+        params = {"user_id": current_user["id"], "updated_at": datetime.utcnow()}
+        
+        if "full_name" in profile_data:
+            update_fields.append("full_name = :full_name")
+            params["full_name"] = profile_data["full_name"]
+        
+        if "email" in profile_data:
+            # Check if email is already taken
+            existing = db.execute(
+                text("SELECT id FROM users WHERE email = :email AND id != :user_id"),
+                {"email": profile_data["email"], "user_id": current_user["id"]}
+            ).fetchone()
+            if existing:
+                raise HTTPException(status_code=400, detail="Email already in use")
+            
+            update_fields.append("email = :email")
+            params["email"] = profile_data["email"]
+        
+        if update_fields:
+            update_query = f"""
+                UPDATE users 
+                SET {', '.join(update_fields)}, updated_at = :updated_at
+                WHERE id = :user_id
+            """
+            db.execute(text(update_query), params)
+            db.commit()
+        
+        # Get updated user data
+        user_result = db.execute(
+            text("""
+                SELECT id, username, email, full_name, is_active, created_at
+                FROM users WHERE id = :user_id
+            """),
+            {"user_id": current_user["id"]}
+        ).fetchone()
+        
+        roles = PermissionManager.get_user_roles(db, current_user["id"])
+        permissions = PermissionManager.get_user_permissions(db, current_user["id"])
+        domains = PermissionManager.get_user_domains(db, current_user["id"])
+        
+        # Log profile update
+        AuditLogger.log_event(
+            db, "profile_update", current_user["id"], "users", "update",
+            f"Updated profile for {user_result.email}",
+            {"updated_fields": list(profile_data.keys())}
+        )
+        
+        return UserResponse(
+            id=str(user_result.id),
+            username=user_result.username,
+            email=user_result.email,
+            full_name=user_result.full_name,
+            is_active=user_result.is_active,
+            roles=roles,
+            permissions=permissions,
+            domains=domains
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update profile: {str(e)}")
+
+@app.put("/users/me/password")
+async def change_user_password(
+    password_data: dict,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Change current user's password"""
+    try:
+        current_password = password_data.get("current_password")
+        new_password = password_data.get("new_password")
+        
+        if not current_password or not new_password:
+            raise HTTPException(status_code=400, detail="Current and new passwords are required")
+        
+        # Get current password hash
+        user_result = db.execute(
+            text("SELECT password_hash FROM users WHERE id = :user_id"),
+            {"user_id": current_user["id"]}
+        ).fetchone()
+        
+        # Verify current password
+        if not AuthUtils.verify_password(current_password, user_result.password_hash):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        
+        # Hash new password
+        new_password_hash = AuthUtils.hash_password(new_password)
+        
+        # Update password
+        db.execute(
+            text("""
+                UPDATE users 
+                SET password_hash = :password_hash, updated_at = :updated_at
+                WHERE id = :user_id
+            """),
+            {
+                "password_hash": new_password_hash,
+                "updated_at": datetime.utcnow(),
+                "user_id": current_user["id"]
+            }
+        )
+        
+        db.commit()
+        
+        # Log password change
+        AuditLogger.log_event(
+            db, "password_change", current_user["id"], "users", "update",
+            f"Password changed for user {current_user['email']}",
+            {}
+        )
+        
+        return {"message": "Password updated successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to change password: {str(e)}")
 
 # ============================================================================
 # MAIN APPLICATION

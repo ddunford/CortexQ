@@ -21,9 +21,9 @@ COPY src/ ./src/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
-# Copy migration startup script
-COPY scripts/start.sh ./scripts/
-RUN chmod +x ./scripts/start.sh
+# Copy all scripts
+COPY scripts/ ./scripts/
+RUN chmod +x ./scripts/*.sh ./scripts/*.py
 
 # Expose port
 EXPOSE 8000
@@ -32,5 +32,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Use startup script that handles migrations
-CMD ["./scripts/start.sh"] 
+# Use simple startup script that bypasses migrations
+CMD ["./scripts/start_simple.sh"] 

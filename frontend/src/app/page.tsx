@@ -18,6 +18,9 @@ import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';
 import Card from '../components/ui/Card';
 import OrganizationDashboard from '../components/organization/OrganizationDashboard';
+import TeamManagement from '../components/organization/TeamManagement';
+import OrganizationSettings from '../components/organization/OrganizationSettings';
+import UserProfile from '../components/auth/UserProfile';
 import DomainCreationWizard from '../components/domains/DomainCreationWizard';
 import DomainWorkspace from '../components/workspace/DomainWorkspace';
 import { User as UserType, Organization, Domain } from '../types';
@@ -33,6 +36,10 @@ interface AppState {
   domains: Domain[];
   sidebarOpen: boolean;
   loading: boolean;
+  showTeamManagement: boolean;
+  showOrganizationSettings: boolean;
+  showUserProfile: boolean;
+  showUserDropdown: boolean;
 }
 
 export default function HomePage() {
@@ -42,6 +49,10 @@ export default function HomePage() {
     domains: [],
     sidebarOpen: true,
     loading: false,
+    showTeamManagement: false,
+    showOrganizationSettings: false,
+    showUserProfile: false,
+    showUserDropdown: false,
   });
 
   useEffect(() => {
@@ -52,6 +63,20 @@ export default function HomePage() {
       loadUserData();
     }
   }, []);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (state.showUserDropdown) {
+        setState(prev => ({ ...prev, showUserDropdown: false }));
+      }
+    };
+
+    if (state.showUserDropdown) {
+      document.addEventListener('click', handleClickOutside);
+      return () => document.removeEventListener('click', handleClickOutside);
+    }
+  }, [state.showUserDropdown]);
 
   const loadUserData = async () => {
     setState(prev => ({ ...prev, loading: true }));
@@ -135,6 +160,10 @@ export default function HomePage() {
       domains: [],
       sidebarOpen: true,
       loading: false,
+      showTeamManagement: false,
+      showOrganizationSettings: false,
+      showUserProfile: false,
+      showUserDropdown: false,
     });
   };
 
@@ -166,6 +195,36 @@ export default function HomePage() {
       currentView: 'organization',
       selectedDomain: undefined,
     }));
+  };
+
+  const handleManageTeam = () => {
+    setState(prev => ({ ...prev, showTeamManagement: true }));
+  };
+
+  const handleViewBilling = () => {
+    setState(prev => ({ ...prev, showOrganizationSettings: true }));
+  };
+
+  const handleShowUserProfile = () => {
+    setState(prev => ({ ...prev, showUserProfile: true }));
+  };
+
+  const handleCloseModals = () => {
+    setState(prev => ({
+      ...prev,
+      showTeamManagement: false,
+      showOrganizationSettings: false,
+      showUserProfile: false,
+      showUserDropdown: false,
+    }));
+  };
+
+  const handleUserUpdate = (updatedUser: UserType) => {
+    setState(prev => ({ ...prev, user: updatedUser }));
+  };
+
+  const handleOrganizationUpdate = (updatedOrganization: Organization) => {
+    setState(prev => ({ ...prev, organization: updatedOrganization }));
   };
 
   if (!isAuthenticated) {
@@ -278,7 +337,7 @@ export default function HomePage() {
           {state.sidebarOpen && (
             <div className="ml-3 flex-1">
               <p className="text-sm font-medium text-gray-900">{state.user?.email}</p>
-              <p className="text-xs text-gray-500 capitalize">{state.user?.role}</p>
+              <p className="text-xs text-gray-500 capitalize">{state.user?.roles?.[0] || 'user'}</p>
             </div>
           )}
           {state.sidebarOpen && (
@@ -331,12 +390,44 @@ export default function HomePage() {
             <span className="absolute top-1 right-1 h-2 w-2 bg-red-500 rounded-full"></span>
           </button>
           
-          <button className="flex items-center space-x-2 p-2 text-gray-700 hover:bg-gray-100 rounded-lg">
-            <div className="h-6 w-6 bg-gray-300 rounded-full flex items-center justify-center">
-              <User className="h-3 w-3 text-gray-600" />
-            </div>
-            <ChevronDown className="h-4 w-4" />
-          </button>
+          <div className="relative">
+            <button 
+              className="flex items-center space-x-2 p-2 text-gray-700 hover:bg-gray-100 rounded-lg"
+              onClick={() => setState(prev => ({ ...prev, showUserDropdown: !prev.showUserDropdown }))}
+            >
+              <div className="h-6 w-6 bg-gray-300 rounded-full flex items-center justify-center">
+                <User className="h-3 w-3 text-gray-600" />
+              </div>
+              <span className="text-sm font-medium">{state.user?.email || 'User'}</span>
+              <ChevronDown className="h-4 w-4" />
+            </button>
+            
+            {state.showUserDropdown && (
+              <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
+                <button
+                  onClick={() => {
+                    handleShowUserProfile();
+                    setState(prev => ({ ...prev, showUserDropdown: false }));
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center space-x-2"
+                >
+                  <Settings className="h-4 w-4" />
+                  <span>Profile Settings</span>
+                </button>
+                <hr className="my-1" />
+                <button
+                  onClick={() => {
+                    logout();
+                    setState(prev => ({ ...prev, showUserDropdown: false }));
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center space-x-2"
+                >
+                  <LogOut className="h-4 w-4" />
+                  <span>Sign Out</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -351,8 +442,8 @@ export default function HomePage() {
           <OrganizationDashboard
             organization={state.organization}
             onCreateDomain={handleCreateDomain}
-            onManageTeam={() => {}}
-            onViewBilling={() => {}}
+            onManageTeam={handleManageTeam}
+            onViewBilling={handleViewBilling}
           />
         );
       
@@ -394,6 +485,30 @@ export default function HomePage() {
           {renderMainContent()}
         </main>
       </div>
+
+      {/* Modal Components */}
+      {state.showTeamManagement && state.organization && (
+        <TeamManagement
+          organizationId={state.organization.id}
+          onClose={handleCloseModals}
+        />
+      )}
+
+      {state.showOrganizationSettings && state.organization && (
+        <OrganizationSettings
+          organization={state.organization}
+          onClose={handleCloseModals}
+          onOrganizationUpdate={handleOrganizationUpdate}
+        />
+      )}
+
+      {state.showUserProfile && state.user && (
+        <UserProfile
+          user={state.user}
+          onClose={handleCloseModals}
+          onUserUpdate={handleUserUpdate}
+        />
+      )}
     </div>
   );
 }
@@ -403,14 +518,34 @@ function LoginForm({ onLogin }: { onLogin: (email: string, password: string) => 
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [isRegister, setIsRegister] = useState(false);
+  const [error, setError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setError('');
+    
     try {
-      await onLogin(email, password);
+      if (isRegister) {
+        // Handle registration (email as primary identifier)
+        const response = await apiClient.register({
+          email,
+          password,
+        });
+        
+        if (response.success) {
+          // Auto-login after successful registration
+          await onLogin(email, password);
+        } else {
+          setError(response.message || 'Registration failed');
+        }
+      } else {
+        // Handle login
+        await onLogin(email, password);
+      }
     } catch (error) {
       console.error('Authentication error:', error);
+      setError(isRegister ? 'Registration failed' : 'Login failed');
     } finally {
       setLoading(false);
     }
@@ -425,28 +560,50 @@ function LoginForm({ onLogin }: { onLogin: (email: string, password: string) => 
               <Building2 className="h-6 w-6 text-white" />
             </div>
             <h1 className="text-2xl font-bold text-gray-900">Enterprise RAG</h1>
-            <p className="text-gray-600">AI-Powered Knowledge Management</p>
+            <p className="text-gray-600">
+              {isRegister ? 'Create your account to get started' : 'AI-Powered Knowledge Management'}
+            </p>
+          </div>
+
+          <div className="mb-6">
+            <h2 className="text-xl font-semibold text-gray-900 text-center">
+              {isRegister ? 'Create Account' : 'Sign In'}
+            </h2>
+            <p className="text-sm text-gray-600 text-center mt-1">
+              {isRegister 
+                ? 'Enter your email and password to create your account' 
+                : 'Enter your credentials to access your workspace'
+              }
+            </p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
+            {error && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                <p className="text-sm text-red-600">{error}</p>
+              </div>
+            )}
+
+
+
             <Input
-              label="Email"
+              label={isRegister ? "Email Address" : "Email"}
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="Enter your email"
+              placeholder={isRegister ? "Enter your work email" : "Enter your email"}
               autoComplete="email"
               fullWidth
               required
             />
             
             <Input
-              label="Password"
+              label={isRegister ? "Create Password" : "Password"}
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter your password"
-              autoComplete="current-password"
+              placeholder={isRegister ? "Create a secure password" : "Enter your password"}
+              autoComplete={isRegister ? "new-password" : "current-password"}
               fullWidth
               required
             />
@@ -462,18 +619,16 @@ function LoginForm({ onLogin }: { onLogin: (email: string, password: string) => 
 
           <div className="mt-6 text-center">
             <button
-              onClick={() => setIsRegister(!isRegister)}
+              onClick={() => {
+                setIsRegister(!isRegister);
+                setError('');
+                setEmail('');
+                setPassword('');
+              }}
               className="text-sm text-blue-600 hover:text-blue-500"
             >
               {isRegister ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
             </button>
-          </div>
-
-          <div className="mt-8 pt-6 border-t border-gray-200">
-            <div className="text-center text-sm text-gray-500">
-              <p>Demo Credentials:</p>
-              <p className="font-mono">test@example.com / test123</p>
-            </div>
           </div>
         </div>
       </Card>

@@ -47,6 +47,10 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   const [connectors, setConnectors] = useState<ConnectorConfig[]>([]);
   const [analytics, setAnalytics] = useState<AnalyticsMetrics | null>(null);
   const [loading, setLoading] = useState(false);
+  
+  // File upload state
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const tabs = [
     { id: 'knowledge', label: 'Knowledge Base', icon: FileText, description: 'Manage documents and files' },
@@ -66,7 +70,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     try {
       switch (activeTab) {
         case 'knowledge':
-          const docsResponse = await apiClient.getFiles(domain.id);
+          const docsResponse = await apiClient.getFiles(domain.domain_name);
           if (docsResponse.success) {
             setDocuments(docsResponse.data);
           }
@@ -138,6 +142,40 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     }
   };
 
+  // File upload handlers
+  const handleUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    if (files.length === 0) return;
+
+    setUploading(true);
+    try {
+      for (const file of files) {
+        console.log(`Uploading file: ${file.name}`);
+        const uploadResponse = await apiClient.uploadFile(file, domain.domain_name);
+        if (uploadResponse.success) {
+          console.log(`Successfully uploaded: ${file.name}`);
+        } else {
+          console.error(`Failed to upload ${file.name}:`, uploadResponse.message);
+        }
+      }
+      
+      // Reload documents after upload
+      await loadWorkspaceData();
+    } catch (error) {
+      console.error('File upload failed:', error);
+    } finally {
+      setUploading(false);
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
   const renderKnowledgeBase = () => (
     <div className="space-y-6">
       {/* Header */}
@@ -150,7 +188,11 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
           <Button variant="outline" icon={<Filter className="h-4 w-4" />}>
             Filter
           </Button>
-          <Button icon={<Upload className="h-4 w-4" />}>
+          <Button 
+            icon={<Upload className="h-4 w-4" />}
+            onClick={handleUploadClick}
+            loading={uploading}
+          >
             Upload Files
           </Button>
         </div>
@@ -201,7 +243,13 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
               <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
               <h3 className="text-lg font-medium text-gray-900 mb-2">No documents yet</h3>
               <p className="text-gray-500 mb-4">Upload your first document to get started.</p>
-              <Button icon={<Upload className="h-4 w-4" />}>Upload Document</Button>
+              <Button 
+                icon={<Upload className="h-4 w-4" />}
+                onClick={handleUploadClick}
+                loading={uploading}
+              >
+                Upload Document
+              </Button>
             </div>
           ) : (
             <div className="space-y-3">
@@ -220,9 +268,9 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
                     <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(doc.status)}`}>
                       {doc.status}
                     </span>
-                    <Button variant="ghost" size="sm" icon={<Eye className="h-4 w-4" />} />
-                    <Button variant="ghost" size="sm" icon={<Download className="h-4 w-4" />} />
-                    <Button variant="ghost" size="sm" icon={<Trash2 className="h-4 w-4" />} />
+                    <Button variant="ghost" size="sm" icon={<Eye className="h-4 w-4" />}>View</Button>
+                    <Button variant="ghost" size="sm" icon={<Download className="h-4 w-4" />}>Download</Button>
+                    <Button variant="ghost" size="sm" icon={<Trash2 className="h-4 w-4" />}>Delete</Button>
                   </div>
                 </div>
               ))}
@@ -531,6 +579,16 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept=".pdf,.docx,.txt,.md,.json,.csv,.yaml,.yml"
+        onChange={handleFileSelect}
+        className="hidden"
+      />
+
       {/* Domain Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-4">
