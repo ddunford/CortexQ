@@ -13,7 +13,7 @@ from sqlalchemy import text
 from dependencies import get_db, get_current_user, require_permission, require_admin
 
 # Initialize router
-router = APIRouter(prefix="/analytics", tags=["analytics"])
+router = APIRouter(tags=["analytics"])
 
 # Global services (will be set by main app)
 classifier = None

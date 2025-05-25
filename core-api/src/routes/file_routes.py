@@ -17,15 +17,15 @@ from sqlalchemy import text
 from models import FileUploadResponse, WebScrapingRequest, WebScrapingResponse
 from dependencies import get_db, get_current_user, require_permission
 from auth_utils import PermissionManager, AuditLogger
-from storage_utils import MinIOStorage
-from background_processor import BackgroundProcessor
-from crawler_scheduler import CrawlScheduler
+from storage_utils import minio_storage
+from background_processor import BackgroundJobProcessor
+from ingestion.crawler import CrawlScheduler
 
 # Initialize router
-router = APIRouter(prefix="/files", tags=["files"])
+router = APIRouter(tags=["files"])
 
 # Initialize services (will be set by main app)
-background_processor = None
+background_job_processor = None
 minio_storage = None
 
 logger = logging.getLogger(__name__)
@@ -36,8 +36,8 @@ CRAWLER_AVAILABLE = False
 
 def set_services(bp, ms, crawler_available=False):
     """Set service instances"""
-    global background_processor, minio_storage, CRAWLER_AVAILABLE
-    background_processor = bp
+    global background_job_processor, minio_storage, CRAWLER_AVAILABLE
+    background_job_processor = bp
     minio_storage = ms
     CRAWLER_AVAILABLE = crawler_available
 
@@ -268,8 +268,8 @@ async def upload_file(
         db.commit()
         
         # Queue for background processing
-        if background_processor:
-            await background_processor.queue_file_processing(
+        if background_job_processor:
+            await background_job_processor.queue_file_processing(
                 file_id, content, detected_content_type, domain, organization_id
             )
         
@@ -439,7 +439,7 @@ async def download_file(
 # ============================================================================
 
 # Create a separate router for web scraping
-web_router = APIRouter(prefix="/web-scraping", tags=["web-scraping"])
+web_router = APIRouter(tags=["web-scraping"])
 
 
 @web_router.post("/start", response_model=WebScrapingResponse)

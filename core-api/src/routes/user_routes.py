@@ -14,7 +14,7 @@ from dependencies import get_db, get_current_user
 from auth_utils import AuthUtils, PermissionManager, AuditLogger
 
 # Initialize router
-router = APIRouter(prefix="/users", tags=["user-profile"])
+router = APIRouter(tags=["user-profile"])
 
 
 @router.put("/me", response_model=UserResponse)

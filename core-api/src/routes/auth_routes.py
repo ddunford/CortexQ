@@ -13,6 +13,12 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
+import sys
+import os
+# Add the parent directory to the path
+parent_dir = os.path.dirname(os.path.dirname(__file__))
+sys.path.insert(0, parent_dir)
+
 from models import (
     LoginRequest, LoginResponse, UserCreate, UserResponse, 
     PermissionCheck, RoleCreate
@@ -22,7 +28,7 @@ from dependencies.auth_dependencies import security
 from auth_utils import AuthUtils, PermissionManager, AuditLogger, SessionManager
 
 # Initialize router
-router = APIRouter(prefix="/auth", tags=["authentication"])
+router = APIRouter(tags=["authentication"])
 
 # Initialize session manager (will be set by main app)
 session_manager = None
@@ -293,7 +299,7 @@ async def check_permission(
 # ============================================================================
 
 # Create a separate router for user management
-user_router = APIRouter(prefix="/users", tags=["user-management"])
+user_router = APIRouter(tags=["user-management"])
 
 
 @user_router.post("", response_model=UserResponse)
@@ -527,7 +533,7 @@ async def change_user_password(
 # ============================================================================
 
 # Create a separate router for role management
-role_router = APIRouter(prefix="/roles", tags=["role-management"])
+role_router = APIRouter(tags=["role-management"])
 
 
 @role_router.get("")

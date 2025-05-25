@@ -3,7 +3,7 @@ Routes package for Enterprise RAG API
 Exports all routers for easy importing
 """
 
-from .auth_routes import router as auth_router
+from .auth_routes import router as auth_router, user_router as auth_user_router, role_router as auth_role_router
 from .file_routes import router as file_router, web_router as web_scraping_router
 from .organization_routes import router as organization_router, templates_router as domain_templates_router
 from .analytics_routes import router as analytics_router
@@ -13,6 +13,8 @@ from .debug_routes import router as debug_router
 
 __all__ = [
     "auth_router",
+    "auth_user_router",
+    "auth_role_router",
     "file_router", 
     "web_scraping_router",
     "organization_router",

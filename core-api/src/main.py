@@ -31,9 +31,13 @@ import redis
 from dependencies import get_db
 from routes import (
     auth_router,
+    auth_user_router,
+    auth_role_router,
     file_router, 
+    web_scraping_router,
     chat_router,
     organization_router,
+    domain_templates_router,
     analytics_router,
     user_router,
     debug_router
@@ -169,11 +173,15 @@ async def health_check():
 
 # Register all routers with appropriate prefixes
 app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
+app.include_router(auth_user_router, prefix="/auth/users", tags=["User Management"])
+app.include_router(auth_role_router, prefix="/auth/roles", tags=["Role Management"])
 app.include_router(file_router, prefix="/files", tags=["File Management"])
+app.include_router(web_scraping_router, prefix="/web-scraping", tags=["Web Scraping"])
 app.include_router(chat_router, prefix="/chat", tags=["Chat & RAG"])
 app.include_router(organization_router, prefix="/organizations", tags=["Organizations"])
+app.include_router(domain_templates_router, prefix="/domain-templates", tags=["Domain Templates"])
 app.include_router(analytics_router, prefix="/analytics", tags=["Analytics"])
-app.include_router(user_router, prefix="/users", tags=["User Management"])
+app.include_router(user_router, prefix="/users", tags=["User Profile"])
 
 # Debug router (only in development)
 if DEBUG:

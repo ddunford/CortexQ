@@ -22,7 +22,7 @@ from dependencies import get_db, get_current_user, require_permission
 from auth_utils import PermissionManager, AuditLogger
 
 # Initialize router
-router = APIRouter(prefix="/organizations", tags=["organizations"])
+router = APIRouter(tags=["organizations"])
 
 logger = logging.getLogger(__name__)
 
@@ -712,7 +712,7 @@ async def remove_organization_member(
 # ============================================================================
 
 # Create a separate router for domain templates
-templates_router = APIRouter(prefix="/domain-templates", tags=["domain-templates"])
+templates_router = APIRouter(tags=["domain-templates"])
 
 
 @templates_router.get("", response_model=List[DomainTemplateResponse])

@@ -86,6 +86,8 @@ services:
       - ./core-api/alembic.ini:/app/alembic.ini
       # Map requirements for dependency changes
       - ./core-api/requirements.txt:/app/requirements.txt
+      # Map tests directory for test execution
+      - ./tests:/app/tests
       # Persistent file storage
       - file_storage:/app/storage
     networks:

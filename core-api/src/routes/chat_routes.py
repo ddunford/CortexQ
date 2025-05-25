@@ -11,13 +11,19 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
+import sys
+import os
+# Add the parent directory to the path
+parent_dir = os.path.dirname(os.path.dirname(__file__))
+sys.path.insert(0, parent_dir)
+
 from models import ChatRequest, ChatResponse
 from dependencies import get_db, get_current_user, require_permission
 from auth_utils import PermissionManager, AuditLogger
 from rag_processor import RAGRequest
 
 # Initialize router
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter(tags=["chat"])
 
 # Initialize RAG processor (will be set by main app)
 rag_processor = None
