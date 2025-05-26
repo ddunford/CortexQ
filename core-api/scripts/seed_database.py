@@ -124,6 +124,18 @@ def seed_permissions(db):
             "action": "read"
         },
         {
+            "name": "connectors:read",
+            "description": "View and list connectors",
+            "resource": "connectors",
+            "action": "read"
+        },
+        {
+            "name": "connectors:write",
+            "description": "Create, update, and manage connectors",
+            "resource": "connectors",
+            "action": "write"
+        },
+        {
             "name": "admin:all",
             "description": "Full administrative access",
             "resource": "admin",
@@ -169,7 +181,7 @@ def seed_roles(db):
                 "chat:read", "chat:write", "files:read", "files:write", "files:delete",
                 "users:read", "users:create", "users:update", "users:delete",
                 "roles:read", "roles:create", "roles:update", "roles:delete",
-                "search:read", "search:write", "analytics:read", "admin:all"
+                "search:read", "search:write", "analytics:read", "connectors:read", "connectors:write", "admin:all"
             ],
             "domain_access": ["*"]  # All domains
         },
@@ -178,7 +190,7 @@ def seed_roles(db):
             "description": "Standard user with basic access",
             "permissions": [
                 "chat:read", "chat:write", "files:read", "files:write", 
-                "search:read", "analytics:read"
+                "search:read", "analytics:read", "connectors:read", "connectors:write"
             ],
             "domain_access": ["general"]
         },
@@ -243,11 +255,11 @@ def seed_role_permissions(db):
             "chat:read", "chat:write", "files:read", "files:write", "files:delete",
             "users:read", "users:create", "users:update", "users:delete",
             "roles:read", "roles:create", "roles:update", "roles:delete",
-            "search:read", "search:write", "analytics:read", "admin:all"
+            "search:read", "search:write", "analytics:read", "connectors:read", "connectors:write", "admin:all"
         ],
         "user": [
             "chat:read", "chat:write", "files:read", "files:write", 
-            "search:read", "analytics:read"
+            "search:read", "analytics:read", "connectors:read", "connectors:write"
         ],
         "viewer": [
             "chat:read", "files:read", "search:read"
