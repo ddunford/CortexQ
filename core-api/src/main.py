@@ -42,6 +42,8 @@ from routes import (
     user_router,
     debug_router
 )
+from routes.auth_routes import set_session_manager
+from routes.chat_routes import set_rag_processor
 
 # Import core services
 from rag_processor import initialize_rag_processor
@@ -74,6 +76,9 @@ embeddings_model = None
 rag_processor = None
 session_manager = SessionManager(redis_client)
 
+# Initialize session manager in auth routes
+set_session_manager(session_manager)
+
 # ============================================================================
 # APPLICATION LIFECYCLE
 # ============================================================================
@@ -100,6 +105,10 @@ async def lifespan(app: FastAPI):
             logger.info("Initializing RAG processor...")
             rag_processor = initialize_rag_processor(embeddings_model)
             logger.info("✅ RAG processor initialized")
+            
+            # Set RAG processor in chat routes
+            set_rag_processor(rag_processor)
+            
         except Exception as e:
             logger.error(f"❌ Failed to initialize RAG processor: {e}")
             rag_processor = None

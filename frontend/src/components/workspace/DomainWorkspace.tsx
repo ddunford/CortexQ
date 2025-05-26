@@ -104,7 +104,17 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
         case 'knowledge':
           const docsResponse = await apiClient.getFiles(domain.domain_name);
           if (docsResponse.success) {
-            setDocuments(docsResponse.data);
+            // Map API response to frontend format
+            const mappedFiles = (docsResponse.data.files || []).map((file: any) => ({
+              ...file,
+              id: file.id,
+              filename: file.filename,
+              size: file.size_bytes,
+              createdAt: file.upload_date,
+              status: file.processed === true ? 'indexed' : 
+                     file.processing_status === 'error' ? 'error' : 'processing'
+            }));
+            setDocuments(mappedFiles);
           }
           break;
         case 'sources':
@@ -461,7 +471,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
         <Card padding="sm">
           <div className="text-center">
             <p className="text-2xl font-bold text-gray-900">
-              {Math.round(documents.reduce((acc, d) => acc + d.size, 0) / 1024 / 1024)}MB
+              {Math.round(documents.reduce((acc, d) => acc + (d.size || d.size_bytes || 0), 0) / 1024 / 1024)}MB
             </p>
             <p className="text-sm text-gray-600">Total Size</p>
           </div>
@@ -496,7 +506,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
                     <div>
                       <h4 className="font-medium text-gray-900">{doc.filename}</h4>
                       <p className="text-sm text-gray-500">
-                        {(doc.size / 1024).toFixed(1)}KB • {new Date(doc.createdAt).toLocaleDateString()}
+                        {((doc.size || doc.size_bytes || 0) / 1024).toFixed(1)}KB • {new Date(doc.createdAt || doc.upload_date).toLocaleDateString()}
                       </p>
                     </div>
                   </div>

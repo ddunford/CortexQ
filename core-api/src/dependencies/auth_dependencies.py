@@ -37,15 +37,39 @@ async def get_current_user(
             logger.warning("Token missing user ID")
             raise HTTPException(status_code=401, detail="Invalid token payload")
         
-        # Get user from database with permissions
-        user_data = AuthUtils.get_user_with_permissions(db, user_id)
-        if not user_data:
+        # Get user from database
+        from sqlalchemy import text
+        user_result = db.execute(
+            text("""
+                SELECT id, username, email, full_name, is_active, created_at
+                FROM users WHERE id = :user_id
+            """),
+            {"user_id": user_id}
+        ).fetchone()
+        
+        if not user_result:
             logger.warning(f"User {user_id} not found in database")
             raise HTTPException(status_code=401, detail="User not found")
         
-        if not user_data.get("is_active", False):
+        if not user_result.is_active:
             logger.warning(f"User {user_id} is not active")
             raise HTTPException(status_code=401, detail="User account is disabled")
+        
+        # Get user permissions and roles
+        roles = PermissionManager.get_user_roles(db, user_id)
+        permissions = PermissionManager.get_user_permissions(db, user_id)
+        domains = PermissionManager.get_user_domains(db, user_id)
+        
+        user_data = {
+            "id": str(user_result.id),
+            "username": user_result.username,
+            "email": user_result.email,
+            "full_name": user_result.full_name,
+            "is_active": user_result.is_active,
+            "roles": roles,
+            "permissions": permissions,
+            "domains": domains
+        }
         
         return user_data
         

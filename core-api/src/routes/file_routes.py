@@ -237,19 +237,20 @@ async def upload_file(
         db.execute(
             text("""
                 INSERT INTO files (
-                    id, filename, content_type, size_bytes, domain, organization_id,
+                    id, filename, original_filename, content_type, size_bytes, domain, organization_id,
                     uploaded_by, file_hash, storage_type, object_key, storage_url,
-                    upload_date, processed, metadata
+                    created_at, processed, metadata
                 )
                 VALUES (
-                    :id, :filename, :content_type, :size_bytes, :domain, :organization_id,
+                    :id, :filename, :original_filename, :content_type, :size_bytes, :domain, :organization_id,
                     :uploaded_by, :file_hash, :storage_type, :object_key, :storage_url,
-                    :upload_date, :processed, :metadata
+                    :created_at, :processed, :metadata
                 )
             """),
             {
                 "id": file_id,
                 "filename": file.filename,
+                "original_filename": file.filename,
                 "content_type": detected_content_type,
                 "size_bytes": file_size,
                 "domain": domain,
@@ -259,7 +260,7 @@ async def upload_file(
                 "storage_type": storage_type,
                 "object_key": object_key,
                 "storage_url": storage_url,
-                "upload_date": datetime.utcnow(),
+                "created_at": datetime.utcnow(),
                 "processed": False,
                 "metadata": "{}"
             }
@@ -335,7 +336,7 @@ async def list_files(
         # Build query with optional domain filter
         query = """
             SELECT f.id, f.filename, f.content_type, f.size_bytes, f.domain,
-                   f.upload_date, f.processed, f.processing_status, f.metadata,
+                   f.created_at, f.processed, f.processing_status, f.metadata,
                    u.username as uploaded_by_username
             FROM files f
             LEFT JOIN users u ON f.uploaded_by = u.id
@@ -347,7 +348,7 @@ async def list_files(
             query += " AND f.domain = :domain"
             params["domain"] = domain
         
-        query += " ORDER BY f.upload_date DESC LIMIT 100"
+        query += " ORDER BY f.created_at DESC LIMIT 100"
         
         result = db.execute(text(query), params)
         
@@ -359,7 +360,7 @@ async def list_files(
                 "content_type": row.content_type,
                 "size_bytes": row.size_bytes,
                 "domain": row.domain,
-                "upload_date": row.upload_date.isoformat(),
+                "upload_date": row.created_at.isoformat(),
                 "processed": row.processed,
                 "processing_status": row.processing_status,
                 "uploaded_by": row.uploaded_by_username,
@@ -432,6 +433,62 @@ async def download_file(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
+
+@router.get("/processing-status")
+async def get_processing_status(
+    domain: Optional[str] = None,
+    current_user: dict = Depends(require_permission("files:read")),
+    db: Session = Depends(get_db)
+):
+    """Get file processing status with organization isolation"""
+    try:
+        # Get user's organization
+        org_result = db.execute(
+            text("""
+                SELECT om.organization_id
+                FROM organization_members om
+                WHERE om.user_id = :user_id AND om.is_active = true
+                LIMIT 1
+            """),
+            {"user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not org_result:
+            raise HTTPException(status_code=403, detail="User not associated with any organization")
+        
+        organization_id = str(org_result.organization_id)
+        
+        # Build query with optional domain filter
+        query = """
+            SELECT 
+                COUNT(*) as total_files,
+                COUNT(CASE WHEN processed = true THEN 1 END) as processed_files,
+                COUNT(CASE WHEN processed = false THEN 1 END) as pending_files,
+                COUNT(CASE WHEN processing_status = 'error' THEN 1 END) as error_files
+            FROM files f
+            WHERE f.organization_id = :organization_id
+        """
+        params = {"organization_id": organization_id}
+        
+        if domain:
+            query += " AND f.domain = :domain"
+            params["domain"] = domain
+        
+        result = db.execute(text(query), params).fetchone()
+        
+        return {
+            "total_files": result.total_files or 0,
+            "processed_files": result.processed_files or 0,
+            "pending_files": result.pending_files or 0,
+            "error_files": result.error_files or 0,
+            "processing_complete": (result.pending_files or 0) == 0
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get processing status: {str(e)}")
 
 
 # ============================================================================
