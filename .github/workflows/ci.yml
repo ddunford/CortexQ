@@ -65,7 +65,7 @@ jobs:
         python-version: ${{ env.PYTHON_VERSION }}
 
     - name: Cache Python dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('core-api/requirements.txt') }}
@@ -130,14 +130,15 @@ jobs:
         python -m pytest tests/integration/ -v || true
 
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         file: ./core-api/coverage.xml
         flags: backend
         name: backend-coverage
+        token: ${{ secrets.CODECOV_TOKEN }}
 
     - name: Upload test artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: backend-test-results
@@ -187,7 +188,7 @@ jobs:
       run: npm run build
 
     - name: Upload build artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: frontend-build
         path: frontend/.next/
@@ -211,7 +212,7 @@ jobs:
         output: 'trivy-results.sarif'
 
     - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v2
+      uses: github/codeql-action/upload-sarif@v3
       if: always()
       with:
         sarif_file: 'trivy-results.sarif'
@@ -279,7 +280,7 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Run performance tests with k6
-      uses: grafana/k6-action@v0.3.1
+      uses: grafana/k6-action@v0.3.2
       with:
         filename: tests/performance/load-test.js
       env:
