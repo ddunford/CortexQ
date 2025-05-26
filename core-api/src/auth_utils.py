@@ -160,9 +160,22 @@ class PermissionManager:
     @staticmethod
     def has_domain_access(db: Session, user_id: str, domain: str) -> bool:
         """Check if user has access to specific domain"""
-        # For now, allow access to all domains since we don't have domain_access table
-        # In the future, this could be based on organization membership
-        return True
+        # Check if user has access to domain through organization membership
+        result = db.execute(
+            text("""
+                SELECT 1
+                FROM organization_members om
+                JOIN organization_domains od ON om.organization_id = od.organization_id
+                WHERE om.user_id = :user_id 
+                AND od.domain_name = :domain
+                AND om.is_active = true 
+                AND od.is_active = true
+                LIMIT 1
+            """),
+            {"user_id": user_id, "domain": domain}
+        ).fetchone()
+        
+        return result is not None
     
     @staticmethod
     def has_role(user_roles: List[str], role_name: str) -> bool:

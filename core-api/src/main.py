@@ -36,6 +36,7 @@ from routes import (
     file_router, 
     web_scraping_router,
     chat_router,
+    search_router,
     organization_router,
     domain_templates_router,
     analytics_router,
@@ -44,6 +45,7 @@ from routes import (
 )
 from routes.auth_routes import set_session_manager
 from routes.chat_routes import set_rag_processor
+from routes.search_routes import set_rag_processor as set_search_rag_processor
 
 # Import core services
 from rag_processor import initialize_rag_processor
@@ -108,6 +110,9 @@ async def lifespan(app: FastAPI):
             
             # Set RAG processor in chat routes
             set_rag_processor(rag_processor)
+            
+            # Set RAG processor in search routes
+            set_search_rag_processor(rag_processor)
             
         except Exception as e:
             logger.error(f"❌ Failed to initialize RAG processor: {e}")
@@ -187,6 +192,7 @@ app.include_router(auth_role_router, prefix="/auth/roles", tags=["Role Managemen
 app.include_router(file_router, prefix="/files", tags=["File Management"])
 app.include_router(web_scraping_router, prefix="/web-scraping", tags=["Web Scraping"])
 app.include_router(chat_router, prefix="/chat", tags=["Chat & RAG"])
+app.include_router(search_router, prefix="/search", tags=["Search & Discovery"])
 app.include_router(organization_router, prefix="/organizations", tags=["Organizations"])
 app.include_router(domain_templates_router, prefix="/domain-templates", tags=["Domain Templates"])
 app.include_router(analytics_router, prefix="/analytics", tags=["Analytics"])

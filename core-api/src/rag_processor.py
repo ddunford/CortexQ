@@ -145,7 +145,7 @@ class MultiDomainVectorStore:
         domain_data["doc_ids"].extend(doc_ids)
         domain_data["last_updated"] = datetime.utcnow()
     
-    def search(self, query: str, domain: str, top_k: int = 5, min_similarity: float = 0.3) -> List[SearchResult]:
+    def search(self, query: str, domain: str, top_k: int = 5, min_similarity: float = 0.3, organization_id: Optional[str] = None) -> List[SearchResult]:
         """Database-based search with similarity calculation"""
         from database import SessionLocal
         
@@ -158,18 +158,29 @@ class MultiDomainVectorStore:
         db = SessionLocal()
         try:
             # Query embeddings from database with organization context
+            # Include both file embeddings and chat message embeddings
+            query_params = {"domain": domain}
+            org_filter = ""
+            
+            if organization_id:
+                org_filter = "AND e.organization_id = :organization_id"
+                query_params["organization_id"] = organization_id
+            
             result = db.execute(
-                text("""
+                text(f"""
                     SELECT e.id, e.content_text, e.embedding, e.source_id, e.chunk_index,
-                           f.original_filename, f.content_type, f.domain, f.organization_id
+                           COALESCE(f.original_filename, 'Chat Conversation') as original_filename,
+                           COALESCE(f.content_type, e.content_type) as content_type,
+                           e.domain, e.organization_id
                     FROM embeddings e
-                    JOIN files f ON e.source_id = f.id
+                    LEFT JOIN files f ON e.source_id = f.id
                     WHERE e.domain = :domain
-                    AND f.processed = true
+                    {org_filter}
+                    AND (f.processed = true OR f.id IS NULL)
                     ORDER BY e.created_at DESC
-                    LIMIT 100
+                    LIMIT 200
                 """),
-                {"domain": domain}
+                query_params
             )
             
             embeddings_data = result.fetchall()
@@ -221,15 +232,15 @@ class MultiDomainVectorStore:
         finally:
             db.close()
     
-    def cross_domain_search(self, query: str, domains: List[str], top_k: int = 10, min_similarity: float = 0.3) -> Dict[str, List[SearchResult]]:
+    def cross_domain_search(self, query: str, domains: List[str], top_k: int = 10, min_similarity: float = 0.3, organization_id: Optional[str] = None) -> Dict[str, List[SearchResult]]:
         """Search across multiple domains with ranking"""
         all_results = {}
         
         for domain in domains:
-            if domain in self.domain_indices:
-                results = self.search(query, domain, top_k, min_similarity)
-                if results:
-                    all_results[domain] = results
+            # Always search in database, not just domain_indices
+            results = self.search(query, domain, top_k, min_similarity, organization_id)
+            if results:
+                all_results[domain] = results
         
         return all_results
 
@@ -975,7 +986,8 @@ class EnhancedRAGProcessor:
                 request.query, 
                 request.domain, 
                 request.max_results, 
-                request.confidence_threshold
+                request.confidence_threshold,
+                request.organization_id
             )
         
         elif request.mode == RAGMode.CROSS_DOMAIN:
@@ -985,7 +997,8 @@ class EnhancedRAGProcessor:
                 request.query, 
                 all_domains, 
                 request.max_results * 2, 
-                request.confidence_threshold
+                request.confidence_threshold,
+                request.organization_id
             )
             
             # Flatten and rank results
@@ -1003,7 +1016,8 @@ class EnhancedRAGProcessor:
                 request.query, 
                 all_domains, 
                 request.max_results, 
-                request.confidence_threshold
+                request.confidence_threshold,
+                request.organization_id
             )
             
             all_results = []
@@ -1018,7 +1032,8 @@ class EnhancedRAGProcessor:
                 request.query, 
                 request.domain, 
                 request.max_results, 
-                request.confidence_threshold
+                request.confidence_threshold,
+                request.organization_id
             )
     
     def _generate_enhanced_response(

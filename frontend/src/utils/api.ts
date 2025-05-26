@@ -264,10 +264,24 @@ class ApiClient {
   }
 
   // Search APIs
-  async search(query: SearchQuery): Promise<ApiResponse<SearchResult[]>> {
+  async search(query: SearchQuery): Promise<ApiResponse<any>> {
+    // Convert frontend SearchQuery to backend SearchRequest format
+    const searchRequest = {
+      query: query.query,
+      domain: query.domainId ? undefined : undefined, // Will be determined by backend
+      domains: query.domainId ? [query.domainId] : undefined,
+      filters: query.filters || {},
+      mode: query.mode || 'hybrid',
+      limit: query.limit || 20,
+      offset: query.offset || 0,
+      min_confidence: query.filters?.confidence || 0.3,
+      include_content_types: query.filters?.documentTypes,
+      exclude_content_types: undefined
+    };
+
     return this.request('/search', {
       method: 'POST',
-      body: JSON.stringify(query),
+      body: JSON.stringify(searchRequest),
     });
   }
 

@@ -175,6 +175,59 @@ async def chat(
                     "created_at": datetime.utcnow()
                 }
             )
+            
+            # Generate embeddings for chat messages to make them searchable
+            try:
+                # Access the global embeddings model from main.py
+                from main import embeddings_model
+                if embeddings_model:
+                    # Generate embedding for user message
+                    user_embedding = embeddings_model.encode([request.message])[0]
+                    user_embedding_json = json.dumps(user_embedding.tolist())
+                    
+                    # Store user message embedding
+                    db.execute(
+                        text("""
+                            INSERT INTO embeddings (id, source_id, organization_id, content_text, embedding, domain, content_type, created_at)
+                            VALUES (:id, :source_id, :organization_id, :content_text, :embedding, :domain, :content_type, :created_at)
+                        """),
+                        {
+                            "id": str(uuid.uuid4()),
+                            "source_id": session_record.id,  # Use session ID as source
+                            "organization_id": organization_id,
+                            "content_text": request.message,
+                            "embedding": user_embedding_json,
+                            "domain": request.domain,
+                            "content_type": "chat/message",
+                            "created_at": datetime.utcnow()
+                        }
+                    )
+                    
+                    # Generate embedding for assistant response
+                    assistant_embedding = embeddings_model.encode([rag_response.response])[0]
+                    assistant_embedding_json = json.dumps(assistant_embedding.tolist())
+                    
+                    # Store assistant response embedding
+                    db.execute(
+                        text("""
+                            INSERT INTO embeddings (id, source_id, organization_id, content_text, embedding, domain, content_type, created_at)
+                            VALUES (:id, :source_id, :organization_id, :content_text, :embedding, :domain, :content_type, :created_at)
+                        """),
+                        {
+                            "id": str(uuid.uuid4()),
+                            "source_id": session_record.id,  # Use session ID as source
+                            "organization_id": organization_id,
+                            "content_text": rag_response.response,
+                            "embedding": assistant_embedding_json,
+                            "domain": request.domain,
+                            "content_type": "chat/response",
+                            "created_at": datetime.utcnow()
+                        }
+                    )
+                    
+            except Exception as e:
+                print(f"Warning: Failed to generate chat embeddings: {e}")
+                # Don't fail the chat request if embedding generation fails
         
         db.commit()
         

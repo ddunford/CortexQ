@@ -55,6 +55,11 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   const [documents, setDocuments] = useState<Document[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchFilters, setSearchFilters] = useState({
+    documents: true,
+    conversations: true,
+    externalData: true
+  });
   const [connectors, setConnectors] = useState<ConnectorConfig[]>([]);
   const [analytics, setAnalytics] = useState<AnalyticsMetrics | null>(null);
   const [loading, setLoading] = useState(false);
@@ -160,25 +165,56 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     }
   };
 
+  const handleFilterChange = (filterType: 'documents' | 'conversations' | 'externalData') => {
+    setSearchFilters(prev => ({
+      ...prev,
+      [filterType]: !prev[filterType]
+    }));
+  };
+
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     
     setLoading(true);
     try {
+      // Build content type filters based on selected filters
+      const includeContentTypes: string[] = [];
+      if (searchFilters.documents) {
+        includeContentTypes.push('document/file', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/markdown', 'application/json', 'text/csv', 'application/x-yaml');
+      }
+      if (searchFilters.conversations) {
+        includeContentTypes.push('chat/user', 'chat/assistant', 'conversation/session');
+      }
+      if (searchFilters.externalData) {
+        includeContentTypes.push('api/jira', 'api/github', 'api/confluence', 'web/crawled');
+      }
+
       const response = await apiClient.search({
         query: searchQuery,
-        domainId: domain.id,
-        filters: {},
+        domainId: domain.domain_name, // Use domain name instead of ID
+        filters: {
+          documentTypes: includeContentTypes.length > 0 ? includeContentTypes : undefined
+        },
         mode: 'hybrid',
         limit: 20,
         offset: 0,
       });
       
-      if (response.success) {
-        setSearchResults(response.data);
+      if (response.success && response.data) {
+        // Backend returns SearchResponse with results array
+        const searchResponse = response.data;
+        setSearchResults(searchResponse.results || []);
+        console.log('Search completed:', {
+          query: searchQuery,
+          totalFound: searchResponse.total_found,
+          resultsCount: searchResponse.results?.length || 0,
+          searchTime: searchResponse.search_time_ms,
+          filters: searchFilters
+        });
       }
     } catch (error) {
       console.error('Search failed:', error);
+      setSearchResults([]);
     } finally {
       setLoading(false);
     }
@@ -651,6 +687,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
               placeholder="Search documents, conversations, and data..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
               fullWidth
             />
             <Button onClick={handleSearch} loading={loading} icon={<Search className="h-4 w-4" />}>
@@ -658,19 +695,52 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
             </Button>
           </div>
           
-          <div className="flex space-x-4 text-sm">
-            <label className="flex items-center space-x-2">
-              <input type="checkbox" className="rounded" />
-              <span>Documents</span>
-            </label>
-            <label className="flex items-center space-x-2">
-              <input type="checkbox" className="rounded" />
-              <span>Conversations</span>
-            </label>
-            <label className="flex items-center space-x-2">
-              <input type="checkbox" className="rounded" />
-              <span>External Data</span>
-            </label>
+          <div className="flex items-center justify-between">
+            <div className="flex space-x-4 text-sm">
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  className="rounded" 
+                  checked={searchFilters.documents}
+                  onChange={() => handleFilterChange('documents')}
+                />
+                <span>Documents</span>
+              </label>
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  className="rounded" 
+                  checked={searchFilters.conversations}
+                  onChange={() => handleFilterChange('conversations')}
+                />
+                <span>Conversations</span>
+              </label>
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  className="rounded" 
+                  checked={searchFilters.externalData}
+                  onChange={() => handleFilterChange('externalData')}
+                />
+                <span>External Data</span>
+              </label>
+            </div>
+            <div className="flex space-x-2">
+              <Button 
+                variant="ghost" 
+                size="sm"
+                onClick={() => setSearchFilters({ documents: true, conversations: true, externalData: true })}
+              >
+                Select All
+              </Button>
+              <Button 
+                variant="ghost" 
+                size="sm"
+                onClick={() => setSearchFilters({ documents: false, conversations: false, externalData: false })}
+              >
+                Clear All
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -679,20 +749,59 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
       {searchResults.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Search Results ({searchResults.length})</CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle>Search Results ({searchResults.length})</CardTitle>
+              <div className="flex items-center space-x-2 text-xs text-gray-500">
+                <span>Filters:</span>
+                {searchFilters.documents && <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded">Documents</span>}
+                {searchFilters.conversations && <span className="bg-green-100 text-green-800 px-2 py-1 rounded">Conversations</span>}
+                {searchFilters.externalData && <span className="bg-purple-100 text-purple-800 px-2 py-1 rounded">External Data</span>}
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              {searchResults.map((result) => (
-                <div key={result.id} className="border-b border-gray-200 pb-4 last:border-b-0">
-                  <h4 className="font-medium text-gray-900 mb-1">{result.title}</h4>
-                  <p className="text-sm text-gray-600 mb-2">{result.snippet}</p>
+              {searchResults.map((result, index) => (
+                <div key={`${result.id}-${index}`} className="border-b border-gray-200 pb-4 last:border-b-0">
+                  <div className="flex items-start justify-between mb-2">
+                    <h4 className="font-medium text-gray-900 flex-1">{result.title}</h4>
+                    <div className="flex items-center space-x-2 text-xs text-gray-500 ml-4">
+                      <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded">
+                        {result.content_type}
+                      </span>
+                      <span className="bg-green-100 text-green-800 px-2 py-1 rounded">
+                        {(result.confidence * 100).toFixed(1)}%
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-sm text-gray-600 mb-2 leading-relaxed">{result.snippet}</p>
                   <div className="flex items-center justify-between text-xs text-gray-500">
-                    <span>Confidence: {(result.confidence * 100).toFixed(1)}%</span>
-                    <span>Score: {result.score.toFixed(2)}</span>
+                    <div className="flex items-center space-x-4">
+                      <span>Domain: {result.domain}</span>
+                      <span>Type: {result.source_type}</span>
+                      {result.metadata?.chunk_index !== undefined && (
+                        <span>Chunk: {result.metadata.chunk_index + 1}</span>
+                      )}
+                    </div>
+                    <span>Score: {result.score.toFixed(3)}</span>
                   </div>
                 </div>
               ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* No Results Message */}
+      {searchQuery && searchResults.length === 0 && !loading && (
+        <Card>
+          <CardContent>
+            <div className="text-center py-8">
+              <Search className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-900 mb-2">No results found</h3>
+              <p className="text-gray-600">
+                Try adjusting your search terms or check if documents are properly indexed in this domain.
+              </p>
             </div>
           </CardContent>
         </Card>

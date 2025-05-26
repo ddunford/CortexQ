@@ -106,6 +106,18 @@ def seed_permissions(db):
             "action": "delete"
         },
         {
+            "name": "search:read",
+            "description": "Search and retrieve content",
+            "resource": "search",
+            "action": "read"
+        },
+        {
+            "name": "search:write",
+            "description": "Advanced search operations",
+            "resource": "search",
+            "action": "write"
+        },
+        {
             "name": "analytics:read",
             "description": "View analytics and reports",
             "resource": "analytics",
@@ -157,7 +169,7 @@ def seed_roles(db):
                 "chat:read", "chat:write", "files:read", "files:write", "files:delete",
                 "users:read", "users:create", "users:update", "users:delete",
                 "roles:read", "roles:create", "roles:update", "roles:delete",
-                "analytics:read", "admin:all"
+                "search:read", "search:write", "analytics:read", "admin:all"
             ],
             "domain_access": ["*"]  # All domains
         },
@@ -165,7 +177,8 @@ def seed_roles(db):
             "name": "user",
             "description": "Standard user with basic access",
             "permissions": [
-                "chat:read", "chat:write", "files:read", "files:write", "analytics:read"
+                "chat:read", "chat:write", "files:read", "files:write", 
+                "search:read", "analytics:read"
             ],
             "domain_access": ["general"]
         },
@@ -173,7 +186,7 @@ def seed_roles(db):
             "name": "viewer",
             "description": "Read-only access",
             "permissions": [
-                "chat:read", "files:read"
+                "chat:read", "files:read", "search:read"
             ],
             "domain_access": ["general"]
         },
@@ -182,7 +195,7 @@ def seed_roles(db):
             "description": "Support team with extended access",
             "permissions": [
                 "chat:read", "chat:write", "files:read", "files:write",
-                "users:read", "analytics:read"
+                "users:read", "search:read", "analytics:read"
             ],
             "domain_access": ["general", "support"]
         }
@@ -230,17 +243,18 @@ def seed_role_permissions(db):
             "chat:read", "chat:write", "files:read", "files:write", "files:delete",
             "users:read", "users:create", "users:update", "users:delete",
             "roles:read", "roles:create", "roles:update", "roles:delete",
-            "analytics:read", "admin:all"
+            "search:read", "search:write", "analytics:read", "admin:all"
         ],
         "user": [
-            "chat:read", "chat:write", "files:read", "files:write", "analytics:read"
+            "chat:read", "chat:write", "files:read", "files:write", 
+            "search:read", "analytics:read"
         ],
         "viewer": [
-            "chat:read", "files:read"
+            "chat:read", "files:read", "search:read"
         ],
         "support": [
             "chat:read", "chat:write", "files:read", "files:write",
-            "users:read", "analytics:read"
+            "users:read", "search:read", "analytics:read"
         ]
     }
     

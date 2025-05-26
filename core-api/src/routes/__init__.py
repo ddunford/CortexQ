@@ -8,6 +8,7 @@ from .file_routes import router as file_router, web_router as web_scraping_route
 from .organization_routes import router as organization_router, templates_router as domain_templates_router
 from .analytics_routes import router as analytics_router
 from .chat_routes import router as chat_router
+from .search_routes import router as search_router
 from .user_routes import router as user_router
 from .debug_routes import router as debug_router
 
@@ -21,6 +22,7 @@ __all__ = [
     "domain_templates_router",
     "analytics_router",
     "chat_router",
+    "search_router",
     "user_router",
     "debug_router"
 ] 

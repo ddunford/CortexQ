@@ -19,7 +19,11 @@ os.environ["ENCRYPTION_KEY"] = "test-encryption-key"
 import sys
 import os
 # Add the core-api src to the path (same as working test)
-sys.path.insert(0, '/app/src')
+# Check if we're in Docker container (/app) or host system
+if os.path.exists('/app/src'):
+    sys.path.insert(0, '/app/src')
+else:
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'core-api', 'src'))
 
 from main import app
 from dependencies import get_db

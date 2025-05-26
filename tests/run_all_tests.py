@@ -13,7 +13,11 @@ from pathlib import Path
 import json
 
 # Add the core-api src directory to Python path
-sys.path.insert(0, '/mnt/lun-demoapps/rag_chat/core-api/src')
+# Check if we're in Docker container (/app) or host system
+if os.path.exists('/app/src'):
+    sys.path.insert(0, '/app/src')
+else:
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'core-api', 'src'))
 
 def run_command(command, description, capture_output=True):
     """Run a command and return the result."""
@@ -23,6 +27,12 @@ def run_command(command, description, capture_output=True):
     
     start_time = time.time()
     
+    # Determine working directory - use /app if in container, otherwise project root
+    if os.path.exists('/app/src'):
+        work_dir = '/app'
+    else:
+        work_dir = os.path.join(os.path.dirname(__file__), '..')
+    
     try:
         if capture_output:
             result = subprocess.run(
@@ -30,13 +40,13 @@ def run_command(command, description, capture_output=True):
                 shell=True, 
                 capture_output=True, 
                 text=True,
-                cwd='/mnt/lun-demoapps/rag_chat'
+                cwd=work_dir
             )
         else:
             result = subprocess.run(
                 command, 
                 shell=True,
-                cwd='/mnt/lun-demoapps/rag_chat'
+                cwd=work_dir
             )
         
         duration = time.time() - start_time
@@ -105,8 +115,14 @@ def run_unit_tests(verbose=False, coverage=True):
     cmd_parts = ["python", "-m", "pytest"]
     
     if coverage:
+        # Adjust coverage path based on environment
+        if os.path.exists('/app/src'):
+            cov_path = "src"
+        else:
+            cov_path = "core-api/src"
+        
         cmd_parts.extend([
-            "--cov=core-api/src",
+            f"--cov={cov_path}",
             "--cov-report=html:tests/coverage/html",
             "--cov-report=xml:tests/coverage/coverage.xml",
             "--cov-report=term-missing"
@@ -206,7 +222,13 @@ def run_linting():
     # Check if flake8 is available
     try:
         import flake8
-        flake8_cmd = "python -m flake8 core-api/src --max-line-length=120 --ignore=E203,W503"
+        # Adjust path based on environment
+        if os.path.exists('/app/src'):
+            src_path = "src"
+        else:
+            src_path = "core-api/src"
+        
+        flake8_cmd = f"python -m flake8 {src_path} --max-line-length=120 --ignore=E203,W503"
         result = run_command(flake8_cmd, "Running flake8 linting")
         
         if result and result.returncode == 0:
