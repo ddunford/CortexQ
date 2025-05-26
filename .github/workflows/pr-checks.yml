@@ -1,0 +1,156 @@
+name: Pull Request Checks
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '18'
+
+jobs:
+  # Quick validation for PRs
+  pr-validation:
+    name: PR Validation
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install Python dependencies
+      working-directory: ./core-api
+      run: |
+        python -m pip install --upgrade pip
+        pip install black isort flake8
+
+    - name: Install Node.js dependencies
+      working-directory: ./frontend
+      run: npm ci
+
+    - name: Check Python code formatting
+      working-directory: ./core-api
+      run: black --check src/ tests/
+
+    - name: Check Python import sorting
+      working-directory: ./core-api
+      run: isort --check-only src/ tests/
+
+    - name: Python linting
+      working-directory: ./core-api
+      run: flake8 src/ tests/ --max-line-length=100 --ignore=E203,W503
+
+    - name: TypeScript type checking
+      working-directory: ./frontend
+      run: npm run type-check
+
+    - name: Frontend linting
+      working-directory: ./frontend
+      run: npm run lint
+
+    - name: Frontend formatting check
+      working-directory: ./frontend
+      run: npm run format:check
+
+  # Fast unit tests
+  quick-tests:
+    name: Quick Tests
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_USER: testuser
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install Python dependencies
+      working-directory: ./core-api
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest
+
+    - name: Set up environment variables
+      run: |
+        echo "DATABASE_URL=postgresql://testuser:testpassword@localhost:5432/testdb" >> $GITHUB_ENV
+        echo "REDIS_URL=redis://localhost:6379" >> $GITHUB_ENV
+        echo "SECRET_KEY=test-secret-key-for-ci" >> $GITHUB_ENV
+        echo "ENVIRONMENT=test" >> $GITHUB_ENV
+
+    - name: Run quick unit tests
+      working-directory: ./core-api
+      run: |
+        # Wait for services
+        sleep 5
+        # Run only fast unit tests
+        python -m pytest tests/unit/ -v --maxfail=5 -x
+
+  # Build check
+  build-check:
+    name: Build Check
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install dependencies
+      working-directory: ./frontend
+      run: npm ci
+
+    - name: Build frontend
+      working-directory: ./frontend
+      run: npm run build
+
+    - name: Check Docker builds
+      run: |
+        # Check if Dockerfiles are valid
+        docker build --no-cache -f core-api/Dockerfile core-api/ -t test-backend || exit 1
+        docker build --no-cache -f frontend/Dockerfile frontend/ -t test-frontend || exit 1 
