@@ -123,7 +123,6 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8001
       - NODE_ENV=development
     depends_on:
       - core-api

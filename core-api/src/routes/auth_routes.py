@@ -240,6 +240,60 @@ async def register(
             else:
                 logger.warning(f"Role '{role_name}' not found in database")
         
+        # Create default organization for new user
+        org_id = str(uuid.uuid4())
+        org_name = f"{user_data.full_name or user_data.email.split('@')[0]}'s Organization"
+        org_slug = f"org-{int(datetime.utcnow().timestamp())}"
+        
+        db.execute(
+            text("""
+                INSERT INTO organizations (id, name, slug, description, size_category, subscription_tier, created_at)
+                VALUES (:id, :name, :slug, :description, :size_category, :subscription_tier, :created_at)
+            """),
+            {
+                "id": org_id,
+                "name": org_name,
+                "slug": org_slug,
+                "description": f"Personal workspace for {user_data.email}",
+                "size_category": "small",
+                "subscription_tier": "basic",
+                "created_at": datetime.utcnow()
+            }
+        )
+        
+        # Add user as owner of the organization
+        db.execute(
+            text("""
+                INSERT INTO organization_members (user_id, organization_id, role, is_active, joined_at)
+                VALUES (:user_id, :organization_id, :role, :is_active, :joined_at)
+            """),
+            {
+                "user_id": user_id,
+                "organization_id": org_id,
+                "role": "owner",
+                "is_active": True,
+                "joined_at": datetime.utcnow()
+            }
+        )
+        
+        # Create default domain for the organization
+        domain_id = str(uuid.uuid4())
+        db.execute(
+            text("""
+                INSERT INTO organization_domains (id, organization_id, domain_name, display_name, description, is_active, created_at)
+                VALUES (:id, :organization_id, :domain_name, :display_name, :description, :is_active, :created_at)
+            """),
+            {
+                "id": domain_id,
+                "organization_id": org_id,
+                "domain_name": "general",
+                "display_name": "Knowledge Base",
+                "description": "Main knowledge base for documents and data sources",
+                "is_active": True,
+                "created_at": datetime.utcnow()
+            }
+        )
+        
         db.commit()
         
         # Get user data for response from database
@@ -250,8 +304,8 @@ async def register(
         # Log user registration
         AuditLogger.log_event(
             db, "user_registration", user_id, "users", "create",
-            f"User {user_data.email} registered",
-            {"roles": roles}
+            f"User {user_data.email} registered with organization {org_name}",
+            {"roles": roles, "organization_id": org_id, "domain_id": domain_id}
         )
         
         return UserResponse(

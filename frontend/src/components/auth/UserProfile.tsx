@@ -113,7 +113,10 @@ const UserProfile: React.FC<UserProfileProps> = ({ user, onClose, onUserUpdate }
         setSuccess('Profile updated successfully');
         onUserUpdate(response.data);
       } else {
-        setError(response.message || 'Failed to update profile');
+        const errorMessage = typeof response.message === 'string' 
+          ? response.message 
+          : 'Failed to update profile';
+        setError(errorMessage);
       }
     } catch (error) {
       console.error('Failed to update profile:', error);
@@ -156,7 +159,10 @@ const UserProfile: React.FC<UserProfileProps> = ({ user, onClose, onUserUpdate }
           confirm_password: '',
         });
       } else {
-        setError(response.message || 'Failed to change password');
+        const errorMessage = typeof response.message === 'string' 
+          ? response.message 
+          : 'Failed to change password';
+        setError(errorMessage);
       }
     } catch (error) {
       console.error('Failed to change password:', error);
@@ -176,7 +182,10 @@ const UserProfile: React.FC<UserProfileProps> = ({ user, onClose, onUserUpdate }
       if (response.success) {
         setSuccess('Preferences updated successfully');
       } else {
-        setError(response.message || 'Failed to update preferences');
+        const errorMessage = typeof response.message === 'string' 
+          ? response.message 
+          : 'Failed to update preferences';
+        setError(errorMessage);
       }
     } catch (error) {
       console.error('Failed to update preferences:', error);

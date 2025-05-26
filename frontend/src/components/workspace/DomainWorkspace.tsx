@@ -22,12 +22,13 @@ import {
   Trash2,
   Send
 } from 'lucide-react';
-import Card, { CardHeader, CardTitle, CardContent } from '../ui/Card';
+import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import CitationText from '../ui/CitationText';
 import { Domain, Document, SearchResult, AnalyticsMetrics, ConnectorConfig } from '../../types';
 import { apiClient } from '../../utils/api';
+import { ConnectorConfigModal } from '../connectors/ConnectorConfigModal';
 
 interface DomainWorkspaceProps {
   domain: Domain;
@@ -63,6 +64,9 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   const [connectors, setConnectors] = useState<ConnectorConfig[]>([]);
   const [analytics, setAnalytics] = useState<AnalyticsMetrics | null>(null);
   const [loading, setLoading] = useState(false);
+  
+  // Connector modal state
+  const [showConnectorModal, setShowConnectorModal] = useState(false);
   
   // File upload state
   const [uploading, setUploading] = useState(false);
@@ -107,10 +111,11 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     try {
       switch (activeTab) {
         case 'knowledge':
-          const docsResponse = await apiClient.getFiles(domain.domain_name);
+          const docsResponse = await apiClient.getFiles(domain.id);
           if (docsResponse.success) {
-            // Map API response to frontend format
-            const mappedFiles = (docsResponse.data.files || []).map((file: any) => ({
+            // Map API response to frontend format - API returns {files: [...], total: number}
+            const files = docsResponse.data?.files || [];
+            const mappedFiles = files.map((file: any) => ({
               ...file,
               id: file.id,
               filename: file.filename,
@@ -123,9 +128,28 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
           }
           break;
         case 'sources':
+          console.log('Loading connectors for domain:', domain.id);
           const connectorsResponse = await apiClient.getConnectors(domain.id);
-          if (connectorsResponse.success) {
-            setConnectors(connectorsResponse.data);
+          console.log('Connectors API response:', connectorsResponse);
+          
+          if (connectorsResponse.success && connectorsResponse.data && Array.isArray(connectorsResponse.data.connectors)) {
+            // Transform backend response to match frontend interface
+            const mappedConnectors = connectorsResponse.data.connectors.map((connector: any) => ({
+              id: connector.id,
+              type: connector.connector_type,
+              name: connector.name,
+              isEnabled: connector.is_enabled,
+              status: connector.status,
+              lastSync: connector.last_sync_at,
+              authConfig: connector.auth_config || {},
+              syncConfig: connector.sync_config || {},
+              mappingConfig: connector.mapping_config || {}
+            }));
+            console.log('Mapped connectors:', mappedConnectors);
+            setConnectors(mappedConnectors);
+          } else {
+            console.warn('Failed to load connectors or invalid data format:', connectorsResponse);
+            setConnectors([]); // Set to empty array on failure
           }
           break;
         case 'analytics':
@@ -191,7 +215,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
 
       const response = await apiClient.search({
         query: searchQuery,
-        domainId: domain.domain_name, // Use domain name instead of ID
+        domainId: domain.id, // Use domain ID
         filters: {
           documentTypes: includeContentTypes.length > 0 ? includeContentTypes : undefined
         },
@@ -232,7 +256,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     setUploading(true);
     try {
       for (const file of files) {
-        const uploadResponse = await apiClient.uploadFile(file, domain.domain_name);
+        const uploadResponse = await apiClient.uploadFile(file, domain.id);
         if (!uploadResponse.success) {
           // Handle upload failure silently or with proper error reporting
         }
@@ -254,10 +278,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   // Reindexing functions
   const loadProcessingStatus = async () => {
     try {
-      const response = await apiClient.request('/files/processing-status', {
-        method: 'GET',
-        params: { domain: domain.domain_name }
-      });
+      const response = await apiClient.getProcessingStatus(domain.id);
       if (response.success) {
         setProcessingStatus(response.data);
       }
@@ -276,13 +297,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
 
     setReindexing(true);
     try {
-      const response = await apiClient.request('/files/reindex', {
-        method: 'POST',
-        body: JSON.stringify({ 
-          domain: domain.domain_name, 
-          force: force 
-        })
-      });
+      const response = await apiClient.reindexFiles(domain.id, force);
       
       if (response.success) {
         alert(`Successfully queued ${response.data.files_queued} files for reindexing. Estimated completion: ${response.data.estimated_completion}`);
@@ -290,7 +305,10 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
         await loadWorkspaceData();
         await loadProcessingStatus();
       } else {
-        alert(`Reindexing failed: ${response.message}`);
+        const errorMessage = typeof response.message === 'string' 
+          ? response.message 
+          : 'Unknown error occurred';
+        alert(`Reindexing failed: ${errorMessage}`);
       }
     } catch (error) {
       console.error('Reindexing failed:', error);
@@ -318,7 +336,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     try {
       const response = await apiClient.sendMessage({
         message: userMessage.content,
-        domain: domain.domain_name,
+        domainId: domain.id,
         sessionId: sessionId || undefined,
       });
 
@@ -326,7 +344,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
         const assistantMessage: ChatMessage = {
           id: (Date.now() + 1).toString(),
           type: 'assistant',
-          content: response.data.response || 'I received your message but couldn\'t generate a response.',
+          content: response.data.text || 'I received your message but couldn\'t generate a response.',
           timestamp: new Date(),
           sources: response.data.sources || [],
           confidence: response.data.confidence || 0,
@@ -334,15 +352,13 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
 
         setChatMessages(prev => [...prev, assistantMessage]);
         
-        // Set session ID if not already set
-        if (!sessionId && response.data.session_id) {
-          setSessionId(response.data.session_id);
-        }
+        // Set session ID if not already set - note: session_id might not be on Message type
+        // This would need to be handled differently based on actual API response structure
       } else {
         const errorMessage: ChatMessage = {
           id: (Date.now() + 1).toString(),
           type: 'assistant',
-          content: `Sorry, I encountered an error: ${response.message}`,
+          content: `Sorry, I encountered an error: ${typeof response.message === 'string' ? response.message : 'Unknown error occurred'}`,
           timestamp: new Date(),
         };
         setChatMessages(prev => [...prev, errorMessage]);
@@ -370,6 +386,11 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
 
   const formatTimestamp = (timestamp: Date) => {
     return timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const handleConnectorCreated = (connector: ConnectorConfig) => {
+    setConnectors(prev => [...prev, connector]);
+    setShowConnectorModal(false);
   };
 
   const renderKnowledgeBase = () => (
@@ -507,7 +528,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
         <Card padding="sm">
           <div className="text-center">
             <p className="text-2xl font-bold text-gray-900">
-              {Math.round(documents.reduce((acc, d) => acc + (d.size || d.size_bytes || 0), 0) / 1024 / 1024)}MB
+              {Math.round(documents.reduce((acc, d) => acc + (d.size || 0), 0) / 1024 / 1024)}MB
             </p>
             <p className="text-sm text-gray-600">Total Size</p>
           </div>
@@ -542,7 +563,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
                     <div>
                       <h4 className="font-medium text-gray-900">{doc.filename}</h4>
                       <p className="text-sm text-gray-500">
-                        {((doc.size || doc.size_bytes || 0) / 1024).toFixed(1)}KB • {new Date(doc.createdAt || doc.upload_date).toLocaleDateString()}
+                        {((doc.size || 0) / 1024).toFixed(1)}KB • {new Date(doc.createdAt).toLocaleDateString()}
                       </p>
                     </div>
                   </div>
@@ -767,7 +788,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
                     <h4 className="font-medium text-gray-900 flex-1">{result.title}</h4>
                     <div className="flex items-center space-x-2 text-xs text-gray-500 ml-4">
                       <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded">
-                        {result.content_type}
+                        {result.metadata?.contentType || result.type}
                       </span>
                       <span className="bg-green-100 text-green-800 px-2 py-1 rounded">
                         {(result.confidence * 100).toFixed(1)}%
@@ -777,8 +798,8 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
                   <p className="text-sm text-gray-600 mb-2 leading-relaxed">{result.snippet}</p>
                   <div className="flex items-center justify-between text-xs text-gray-500">
                     <div className="flex items-center space-x-4">
-                      <span>Domain: {result.domain}</span>
-                      <span>Type: {result.source_type}</span>
+                      <span>Source: {result.metadata?.domain || 'Unknown'}</span>
+                      <span>Type: {result.type}</span>
                       {result.metadata?.chunk_index !== undefined && (
                         <span>Chunk: {result.metadata.chunk_index + 1}</span>
                       )}
@@ -816,23 +837,40 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
           <h3 className="text-lg font-semibold text-gray-900">Data Sources</h3>
           <p className="text-gray-600">External integrations and connectors</p>
         </div>
-        <Button icon={<Link className="h-4 w-4" />}>
+        <Button 
+          icon={<Link className="h-4 w-4" />}
+          onClick={() => setShowConnectorModal(true)}
+        >
           Add Integration
         </Button>
       </div>
 
-      {connectors.length === 0 ? (
+      {loading && (
+        <Card>
+          <CardContent className="text-center py-8">
+            <div className="animate-spin h-8 w-8 border-2 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+            <p className="text-gray-600">Loading integrations...</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {!loading && (!connectors || connectors.length === 0) ? (
         <Card>
           <CardContent className="text-center py-8">
             <Link className="h-12 w-12 text-gray-400 mx-auto mb-4" />
             <h3 className="text-lg font-medium text-gray-900 mb-2">No integrations yet</h3>
             <p className="text-gray-500 mb-4">Connect external data sources to enrich your domain.</p>
-            <Button icon={<Link className="h-4 w-4" />}>Add Your First Integration</Button>
+            <Button 
+              icon={<Link className="h-4 w-4" />}
+              onClick={() => setShowConnectorModal(true)}
+            >
+              Add Your First Integration
+            </Button>
           </CardContent>
         </Card>
-      ) : (
+      ) : !loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {connectors.map((connector) => (
+          {(connectors || []).map((connector) => (
             <Card key={connector.id} hover>
               <CardContent>
                 <div className="flex items-center justify-between mb-3">
@@ -857,7 +895,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
             </Card>
           ))}
         </div>
-      )}
+      ) : null}
     </div>
   );
 
@@ -983,11 +1021,11 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700">Access Level</label>
-                <p className="text-gray-900 capitalize">{domain.settings.securityConfig.accessControl}</p>
+                <p className="text-gray-900 capitalize">{domain.settings?.securityConfig?.accessControl || 'Not configured'}</p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700">Audit Logging</label>
-                <p className="text-gray-900">{domain.settings.securityConfig.enableAuditLogging ? 'Enabled' : 'Disabled'}</p>
+                <p className="text-gray-900">{domain.settings?.securityConfig?.enableAuditLogging ? 'Enabled' : 'Disabled'}</p>
               </div>
             </div>
           </CardContent>
@@ -1065,6 +1103,14 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
       <div className="min-h-96">
         {renderTabContent()}
       </div>
+
+      {/* Connector Configuration Modal */}
+      <ConnectorConfigModal
+        isOpen={showConnectorModal}
+        onClose={() => setShowConnectorModal(false)}
+        domainId={domain.id}
+        onConnectorCreated={handleConnectorCreated}
+      />
     </div>
   );
 };

@@ -98,37 +98,10 @@ export default function HomePage() {
             setState(prev => ({ ...prev, domains: domainsResponse.data }));
           }
         } else {
-          // Create a real organization via API
-          try {
-            // Generate a unique slug to avoid conflicts
-            const timestamp = Date.now();
-            const createOrgResponse = await apiClient.createOrganization({
-              name: 'My Organization',
-              slug: `my-org-${timestamp}`,
-              description: 'My organization workspace',
-              size_category: 'small',
-              subscription_tier: 'basic',
-            });
-            
-            if (createOrgResponse.success) {
-              const organization = createOrgResponse.data;
-              setState(prev => ({ ...prev, organization }));
-              
-              // Load domains for the new organization
-              const domainsResponse = await apiClient.getDomains(organization.id);
-              if (domainsResponse.success) {
-                setState(prev => ({ ...prev, domains: domainsResponse.data }));
-              }
-            } else {
-              console.error('Failed to create organization:', createOrgResponse);
-              // Set a minimal state so the UI doesn't break
-              setState(prev => ({ ...prev, organization: null, domains: [] }));
-            }
-          } catch (error) {
-            console.error('Error creating organization:', error);
-            // Set a minimal state so the UI doesn't break
-            setState(prev => ({ ...prev, organization: null, domains: [] }));
-          }
+          // No organizations found - this indicates a data issue
+          console.error('No organizations found for user. This may indicate a data issue.');
+          console.log('Organizations response:', orgsResponse);
+          setState(prev => ({ ...prev, organization: null, domains: [] }));
         }
       }
     } catch (error) {
@@ -432,7 +405,31 @@ export default function HomePage() {
   );
 
   const renderMainContent = () => {
-    if (!state.organization) return null;
+    if (!state.organization) {
+      return (
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="text-center">
+            <Building2 className="h-16 w-16 text-gray-400 mx-auto mb-4" />
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">No Organization Found</h2>
+            <p className="text-gray-600 mb-4">
+              You don't seem to be a member of any organization yet.
+            </p>
+            <Button 
+              onClick={() => window.location.reload()}
+              className="mr-2"
+            >
+              Refresh
+            </Button>
+            <Button 
+              variant="ghost"
+              onClick={logout}
+            >
+              Sign Out
+            </Button>
+          </div>
+        </div>
+      );
+    }
 
     switch (state.currentView) {
       case 'organization':
@@ -535,7 +532,10 @@ function LoginForm({ onLogin }: { onLogin: (email: string, password: string) => 
           // Auto-login after successful registration
           await onLogin(email, password);
         } else {
-          setError(response.message || 'Registration failed');
+          const errorMessage = typeof response.message === 'string' 
+            ? response.message 
+            : 'Registration failed';
+          setError(errorMessage);
         }
       } else {
         // Handle login
@@ -543,7 +543,8 @@ function LoginForm({ onLogin }: { onLogin: (email: string, password: string) => 
       }
     } catch (error) {
       console.error('Authentication error:', error);
-      setError(isRegister ? 'Registration failed' : 'Login failed');
+      const errorMessage = isRegister ? 'Registration failed' : 'Login failed';
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }

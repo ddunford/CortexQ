@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, text
 
 from database import ChatSession, ChatMessage, User
 from config import get_settings
@@ -33,15 +33,30 @@ class SessionManager:
         if session:
             # Update last activity
             session.last_activity = datetime.utcnow()
-            session.domain = domain  # Update domain if changed
+            # Note: domain_id is immutable once set, no need to update
             db.commit()
             return session
+        
+        # Get domain_id from domain name
+        domain_result = db.execute(
+            text("""
+                SELECT id FROM organization_domains 
+                WHERE domain_name = :domain_name AND is_active = true
+                LIMIT 1
+            """),
+            {"domain_name": domain}
+        ).fetchone()
+        
+        if not domain_result:
+            raise ValueError(f"Domain '{domain}' not found or not active")
+        
+        domain_id = domain_result.id
         
         # Create new session
         session = ChatSession(
             session_id=session_id,
             user_id=uuid.UUID(user_id),
-            domain=domain,
+            domain_id=domain_id,
             context={
                 "created_via": "api",
                 "initial_domain": domain

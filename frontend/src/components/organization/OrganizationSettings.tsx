@@ -60,7 +60,10 @@ const OrganizationSettings: React.FC<OrganizationSettingsProps> = ({
         setSuccess('Organization updated successfully');
         onOrganizationUpdate(response.data);
       } else {
-        setError(response.message || 'Failed to update organization');
+        const errorMessage = typeof response.message === 'string' 
+          ? response.message 
+          : 'Failed to update organization';
+        setError(errorMessage);
       }
     } catch (error) {
       console.error('Failed to update organization:', error);

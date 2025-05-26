@@ -75,11 +75,25 @@ async def chat(
         
         organization_id = str(org_result.organization_id)
 
+        # Get domain_id from domain name
+        domain_result = db.execute(
+            text("""
+                SELECT id FROM organization_domains 
+                WHERE organization_id = :organization_id AND domain_name = :domain_name AND is_active = true
+            """),
+            {"organization_id": organization_id, "domain_name": request.domain}
+        ).fetchone()
+        
+        if not domain_result:
+            raise HTTPException(status_code=400, detail=f"Domain '{request.domain}' not found or not active")
+        
+        domain_id = str(domain_result.id)
+
         # Ensure chat session exists
         db.execute(
             text("""
-                INSERT INTO chat_sessions (id, session_id, user_id, organization_id, domain, created_at)
-                VALUES (:id, :session_id, :user_id, :organization_id, :domain, :created_at)
+                INSERT INTO chat_sessions (id, session_id, user_id, organization_id, domain_id, created_at)
+                VALUES (:id, :session_id, :user_id, :organization_id, :domain_id, :created_at)
                 ON CONFLICT (session_id) DO NOTHING
             """),
             {
@@ -87,7 +101,7 @@ async def chat(
                 "session_id": session_id,
                 "user_id": current_user["id"],
                 "organization_id": organization_id,
-                "domain": request.domain,
+                "domain_id": domain_id,
                 "created_at": datetime.utcnow()
             }
         )
@@ -188,8 +202,8 @@ async def chat(
                     # Store user message embedding
                     db.execute(
                         text("""
-                            INSERT INTO embeddings (id, source_id, organization_id, content_text, embedding, domain, content_type, created_at)
-                            VALUES (:id, :source_id, :organization_id, :content_text, :embedding, :domain, :content_type, :created_at)
+                            INSERT INTO embeddings (id, source_id, organization_id, content_text, embedding, domain_id, content_type, created_at)
+                            VALUES (:id, :source_id, :organization_id, :content_text, :embedding, :domain_id, :content_type, :created_at)
                         """),
                         {
                             "id": str(uuid.uuid4()),
@@ -197,7 +211,7 @@ async def chat(
                             "organization_id": organization_id,
                             "content_text": request.message,
                             "embedding": user_embedding_json,
-                            "domain": request.domain,
+                            "domain_id": domain_id,
                             "content_type": "chat/message",
                             "created_at": datetime.utcnow()
                         }
@@ -210,8 +224,8 @@ async def chat(
                     # Store assistant response embedding
                     db.execute(
                         text("""
-                            INSERT INTO embeddings (id, source_id, organization_id, content_text, embedding, domain, content_type, created_at)
-                            VALUES (:id, :source_id, :organization_id, :content_text, :embedding, :domain, :content_type, :created_at)
+                            INSERT INTO embeddings (id, source_id, organization_id, content_text, embedding, domain_id, content_type, created_at)
+                            VALUES (:id, :source_id, :organization_id, :content_text, :embedding, :domain_id, :content_type, :created_at)
                         """),
                         {
                             "id": str(uuid.uuid4()),
@@ -219,7 +233,7 @@ async def chat(
                             "organization_id": organization_id,
                             "content_text": rag_response.response,
                             "embedding": assistant_embedding_json,
-                            "domain": request.domain,
+                            "domain_id": domain_id,
                             "content_type": "chat/response",
                             "created_at": datetime.utcnow()
                         }

@@ -12,7 +12,7 @@ import {
   ApiResponse 
 } from '../types';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
 
 class ApiClient {
   private token: string | null = null;
@@ -42,8 +42,8 @@ class ApiClient {
     options: RequestInit = {}
   ): Promise<ApiResponse<T>> {
     const url = `${API_BASE_URL}${endpoint}`;
-    const headers: HeadersInit = {
-      ...options.headers,
+    const headers: Record<string, string> = {
+      ...(options.headers as Record<string, string> || {}),
     };
 
     // Only set Content-Type for non-FormData requests
@@ -52,7 +52,7 @@ class ApiClient {
     }
 
     if (this.token) {
-      headers.Authorization = `Bearer ${this.token}`;
+      headers['Authorization'] = `Bearer ${this.token}`;
     }
 
     try {
@@ -206,7 +206,7 @@ class ApiClient {
   // Chat APIs
   async sendMessage(data: {
     message: string;
-    domain?: string;
+    domainId?: string;
     sessionId?: string;
   }): Promise<ApiResponse<Message>> {
     return this.request('/chat', {
@@ -232,7 +232,7 @@ class ApiClient {
   }
 
   // File Management APIs
-  async uploadFile(file: File, domain: string): Promise<ApiResponse<Document>> {
+  async uploadFile(file: File, domainId: string): Promise<ApiResponse<Document>> {
     // Validate file before upload
     if (file.size === 0) {
       throw new Error('File is empty and cannot be uploaded');
@@ -240,7 +240,7 @@ class ApiClient {
     
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('domain', domain);
+    formData.append('domain', domainId);
 
     return this.request('/files/upload', {
       method: 'POST',
@@ -248,8 +248,8 @@ class ApiClient {
     });
   }
 
-  async getFiles(domain?: string): Promise<ApiResponse<Document[]>> {
-    const endpoint = domain ? `/files?domain=${domain}` : '/files';
+  async getFiles(domainId?: string): Promise<ApiResponse<{ files: Document[]; total: number }>> {
+    const endpoint = domainId ? `/files?domain=${domainId}` : '/files';
     return this.request(endpoint);
   }
 
@@ -260,6 +260,18 @@ class ApiClient {
   async deleteFile(id: string): Promise<ApiResponse<void>> {
     return this.request(`/files/${id}`, {
       method: 'DELETE',
+    });
+  }
+
+  async getProcessingStatus(domainId?: string): Promise<ApiResponse<any>> {
+    const params = domainId ? `?domain=${domainId}` : '';
+    return this.request(`/files/processing-status${params}`);
+  }
+
+  async reindexFiles(domainId: string, force: boolean = false): Promise<ApiResponse<any>> {
+    return this.request('/files/reindex', {
+      method: 'POST',
+      body: JSON.stringify({ domain: domainId, force }),
     });
   }
 

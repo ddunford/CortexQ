@@ -321,13 +321,14 @@ async def get_search_suggestions(
         suggestions_query = """
             SELECT DISTINCT f.original_filename as suggestion, 'filename' as type
             FROM files f
+            LEFT JOIN organization_domains od ON f.domain_id = od.id
             WHERE f.organization_id = :organization_id
             AND LOWER(f.original_filename) LIKE LOWER(:query)
         """
         params = {"organization_id": organization_id, "query": f"%{query}%"}
         
         if domain:
-            suggestions_query += " AND f.domain = :domain"
+            suggestions_query += " AND od.domain_name = :domain"
             params["domain"] = domain
         
         suggestions_query += " LIMIT :limit"
@@ -374,15 +375,16 @@ async def get_search_stats(
                 COUNT(*) as total_files,
                 COUNT(CASE WHEN processed = true THEN 1 END) as indexed_files,
                 SUM(size_bytes) as total_size,
-                COUNT(DISTINCT domain) as domains_count,
+                COUNT(DISTINCT od.domain_name) as domains_count,
                 COUNT(DISTINCT content_type) as content_types_count
             FROM files f
+            LEFT JOIN organization_domains od ON f.domain_id = od.id
             WHERE f.organization_id = :organization_id
         """
         params = {"organization_id": organization_id}
         
         if domain:
-            stats_query += " AND f.domain = :domain"
+            stats_query += " AND od.domain_name = :domain"
             params["domain"] = domain
         
         result = db.execute(text(stats_query), params).fetchone()
@@ -392,11 +394,12 @@ async def get_search_stats(
             SELECT COUNT(*) as total_embeddings
             FROM embeddings e
             JOIN files f ON e.source_id = f.id
+            JOIN organization_domains od ON e.domain_id = od.id
             WHERE f.organization_id = :organization_id
         """
         
         if domain:
-            embeddings_query += " AND e.domain = :domain"
+            embeddings_query += " AND od.domain_name = :domain"
         
         embeddings_result = db.execute(text(embeddings_query), params).fetchone()
         

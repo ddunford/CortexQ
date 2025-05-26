@@ -180,13 +180,27 @@ async def upload_file(
         # Generate file hash for deduplication
         file_hash = hashlib.sha256(content).hexdigest()
         
+        # Get domain_id from domain name
+        domain_result = db.execute(
+            text("""
+                SELECT id FROM organization_domains 
+                WHERE organization_id = :organization_id AND domain_name = :domain_name AND is_active = true
+            """),
+            {"organization_id": organization_id, "domain_name": domain}
+        ).fetchone()
+        
+        if not domain_result:
+            raise HTTPException(status_code=400, detail=f"Domain '{domain}' not found or not active")
+        
+        domain_id = str(domain_result.id)
+
         # Check for duplicates within organization
         existing_file = db.execute(
             text("""
                 SELECT id, filename FROM files 
-                WHERE file_hash = :file_hash AND organization_id = :organization_id AND domain = :domain
+                WHERE file_hash = :file_hash AND organization_id = :organization_id AND domain_id = :domain_id
             """),
-            {"file_hash": file_hash, "organization_id": organization_id, "domain": domain}
+            {"file_hash": file_hash, "organization_id": organization_id, "domain_id": domain_id}
         ).fetchone()
         
         if existing_file:
@@ -237,12 +251,12 @@ async def upload_file(
         db.execute(
             text("""
                 INSERT INTO files (
-                    id, filename, original_filename, content_type, size_bytes, domain, organization_id,
+                    id, filename, original_filename, content_type, size_bytes, domain_id, organization_id,
                     uploaded_by, file_hash, storage_type, object_key, storage_url,
                     created_at, processed, metadata
                 )
                 VALUES (
-                    :id, :filename, :original_filename, :content_type, :size_bytes, :domain, :organization_id,
+                    :id, :filename, :original_filename, :content_type, :size_bytes, :domain_id, :organization_id,
                     :uploaded_by, :file_hash, :storage_type, :object_key, :storage_url,
                     :created_at, :processed, :metadata
                 )
@@ -253,7 +267,7 @@ async def upload_file(
                 "original_filename": file.filename,
                 "content_type": detected_content_type,
                 "size_bytes": file_size,
-                "domain": domain,
+                "domain_id": domain_id,
                 "organization_id": organization_id,
                 "uploaded_by": current_user["id"],
                 "file_hash": file_hash,
@@ -335,17 +349,19 @@ async def list_files(
         
         # Build query with optional domain filter
         query = """
-            SELECT f.id, f.filename, f.content_type, f.size_bytes, f.domain,
+            SELECT f.id, f.filename, f.content_type, f.size_bytes, od.domain_name as domain,
                    f.created_at, f.processed, f.processing_status, f.metadata,
                    u.username as uploaded_by_username
             FROM files f
             LEFT JOIN users u ON f.uploaded_by = u.id
+            LEFT JOIN organization_domains od ON f.domain_id = od.id
             WHERE f.organization_id = :organization_id
         """
         params = {"organization_id": organization_id}
         
         if domain:
-            query += " AND f.domain = :domain"
+            # Filter by domain ID (UUID)
+            query += " AND od.id = :domain"
             params["domain"] = domain
         
         query += " ORDER BY f.created_at DESC LIMIT 100"
@@ -467,12 +483,14 @@ async def get_processing_status(
                 COUNT(CASE WHEN processed = false THEN 1 END) as pending_files,
                 COUNT(CASE WHEN processing_status = 'error' THEN 1 END) as error_files
             FROM files f
+            LEFT JOIN organization_domains od ON f.domain_id = od.id
             WHERE f.organization_id = :organization_id
         """
         params = {"organization_id": organization_id}
         
         if domain:
-            query += " AND f.domain = :domain"
+            # Filter by domain ID (UUID)
+            query += " AND od.id = :domain"
             params["domain"] = domain
         
         result = db.execute(text(query), params).fetchone()

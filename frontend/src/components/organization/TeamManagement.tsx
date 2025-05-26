@@ -72,7 +72,10 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ organizationId, onClose
         setMembers(response.data);
         setConnectionStatus('connected');
       } else {
-        setError(response.message || 'Failed to load team members');
+        const errorMessage = typeof response.message === 'string' 
+          ? response.message 
+          : 'Failed to load team members';
+        setError(errorMessage);
         if (response.message?.includes('Connection failed')) {
           setConnectionStatus('disconnected');
         }
@@ -108,7 +111,10 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ organizationId, onClose
         setShowInviteModal(false);
         // Note: Invited users won't appear in the list until they accept
       } else {
-        setError(response.message || 'Failed to send invitation');
+        const errorMessage = typeof response.message === 'string' 
+          ? response.message 
+          : 'Failed to send invitation';
+        setError(errorMessage);
       }
     } catch (error) {
       console.error('Failed to invite member:', error);
@@ -128,7 +134,10 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ organizationId, onClose
         setEditingMember(null);
         setSuccess('Member role updated successfully');
       } else {
-        setError(response.message || 'Failed to update member role');
+        const errorMessage = typeof response.message === 'string' 
+          ? response.message 
+          : 'Failed to update member role';
+        setError(errorMessage);
       }
     } catch (error) {
       console.error('Failed to update member:', error);
@@ -147,7 +156,10 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ organizationId, onClose
         setMembers(prev => prev.filter(member => member.id !== memberId));
         setSuccess('Member removed successfully');
       } else {
-        setError(response.message || 'Failed to remove member');
+        const errorMessage = typeof response.message === 'string' 
+          ? response.message 
+          : 'Failed to remove member';
+        setError(errorMessage);
       }
     } catch (error) {
       console.error('Failed to remove member:', error);

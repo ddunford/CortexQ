@@ -41,7 +41,8 @@ from routes import (
     domain_templates_router,
     analytics_router,
     user_router,
-    debug_router
+    debug_router,
+    connectors_router
 )
 from routes.auth_routes import set_session_manager
 from routes.chat_routes import set_rag_processor
@@ -197,6 +198,7 @@ app.include_router(organization_router, prefix="/organizations", tags=["Organiza
 app.include_router(domain_templates_router, prefix="/domain-templates", tags=["Domain Templates"])
 app.include_router(analytics_router, prefix="/analytics", tags=["Analytics"])
 app.include_router(user_router, prefix="/users", tags=["User Profile"])
+app.include_router(connectors_router, tags=["Data Source Connectors"])
 
 # Debug router (only in development)
 if DEBUG:

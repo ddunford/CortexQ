@@ -166,7 +166,7 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
           for (let i = 0; i < uploadedFiles.length; i++) {
             const file = uploadedFiles[i];
             try {
-              const uploadResponse = await apiClient.uploadFile(file, domain.domain_name);
+              const uploadResponse = await apiClient.uploadFile(file, domain.id);
               if (!uploadResponse.success) {
                 // Handle upload failure silently or with proper error reporting
               }
@@ -183,7 +183,7 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
           try {
             const scrapingResponse = await apiClient.startWebScraping({
               urls: webUrls.filter(url => url.trim()),
-              domain: domain.domain_name,
+              domain: domain.id,
               max_depth: 2,
               max_pages: 100,
               delay: 1.0

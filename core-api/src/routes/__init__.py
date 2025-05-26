@@ -11,6 +11,7 @@ from .chat_routes import router as chat_router
 from .search_routes import router as search_router
 from .user_routes import router as user_router
 from .debug_routes import router as debug_router
+from .connectors import router as connectors_router
 
 __all__ = [
     "auth_router",
@@ -24,5 +25,6 @@ __all__ = [
     "chat_router",
     "search_router",
     "user_router",
-    "debug_router"
+    "debug_router",
+    "connectors_router"
 ] 
