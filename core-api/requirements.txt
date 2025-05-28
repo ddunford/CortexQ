@@ -92,6 +92,8 @@ anthropic>=0.7.0
 aiohttp>=3.9.0
 lxml>=4.9.0
 robots>=0.1.5
+user-agents>=2.2.0
+certifi>=2023.7.22
 
 # Schema parser dependencies
 xmltodict>=0.13.0 

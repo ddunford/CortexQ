@@ -12,7 +12,7 @@ from typing import List, Dict, Optional, Set, Tuple, Any, Callable
 from urllib.parse import urljoin, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
 from bs4 import BeautifulSoup
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 import json
 import logging
 from sqlalchemy.orm import Session
@@ -29,7 +29,7 @@ import ssl
 import certifi
 from user_agents import parse as parse_user_agent
 
-from .base_connector import BaseConnector, Document, ConnectorConfig
+from services.base_connector import BaseConnector, Document, ConnectorConfig
 
 logger = logging.getLogger(__name__)
 
@@ -264,11 +264,609 @@ class AdvancedAnalytics:
     competitive_analysis: Optional[Dict[str, Any]] = None
 
 
+@dataclass
+class URLQueueManager:
+    """Advanced URL queue management with priority and throttling"""
+    high_priority: List[Tuple[str, float]] = field(default_factory=list)
+    medium_priority: List[Tuple[str, float]] = field(default_factory=list)
+    low_priority: List[Tuple[str, float]] = field(default_factory=list)
+    failed_urls: Dict[str, List[datetime]] = field(default_factory=dict)
+    rate_limits: Dict[str, float] = field(default_factory=dict)
+    last_access: Dict[str, datetime] = field(default_factory=dict)
+    max_retries: int = 3
+    retry_delay_base: float = 2.0
+    
+    def add_url(self, url: str, priority: float, depth: int = 0):
+        """Add URL to appropriate priority queue"""
+        parsed = urlparse(url)
+        domain = parsed.netloc
+        
+        # Check rate limiting
+        if self._is_rate_limited(domain):
+            return False
+        
+        # Adjust priority based on depth and domain authority
+        adjusted_priority = priority * (0.9 ** depth)
+        
+        url_tuple = (url, adjusted_priority)
+        
+        if priority >= 0.8:
+            self.high_priority.append(url_tuple)
+        elif priority >= 0.5:
+            self.medium_priority.append(url_tuple)
+        else:
+            self.low_priority.append(url_tuple)
+        
+        return True
+    
+    def get_next_url(self) -> Optional[Tuple[str, float]]:
+        """Get next URL from priority queues"""
+        # Sort queues by priority
+        self.high_priority.sort(key=lambda x: x[1], reverse=True)
+        self.medium_priority.sort(key=lambda x: x[1], reverse=True)
+        self.low_priority.sort(key=lambda x: x[1], reverse=True)
+        
+        # Return from highest priority available
+        if self.high_priority:
+            return self.high_priority.pop(0)
+        elif self.medium_priority:
+            return self.medium_priority.pop(0)
+        elif self.low_priority:
+            return self.low_priority.pop(0)
+        
+        return None
+    
+    def mark_failed(self, url: str):
+        """Mark URL as failed for retry logic"""
+        if url not in self.failed_urls:
+            self.failed_urls[url] = []
+        self.failed_urls[url].append(datetime.utcnow())
+    
+    def can_retry(self, url: str) -> bool:
+        """Check if URL can be retried"""
+        if url not in self.failed_urls:
+            return True
+        
+        failures = self.failed_urls[url]
+        if len(failures) >= self.max_retries:
+            return False
+        
+        # Exponential backoff
+        last_failure = failures[-1]
+        delay = self.retry_delay_base ** len(failures)
+        return (datetime.utcnow() - last_failure).total_seconds() > delay * 60
+    
+    def _is_rate_limited(self, domain: str) -> bool:
+        """Check if domain is rate limited"""
+        if domain not in self.last_access:
+            self.last_access[domain] = datetime.utcnow()
+            return False
+        
+        min_delay = self.rate_limits.get(domain, 1.0)
+        elapsed = (datetime.utcnow() - self.last_access[domain]).total_seconds()
+        
+        if elapsed < min_delay:
+            return True
+        
+        self.last_access[domain] = datetime.utcnow()
+        return False
+
+@dataclass
+class ContentExtractionPipeline:
+    """Advanced content extraction and processing pipeline"""
+    extractors: List[str] = field(default_factory=lambda: ['text', 'metadata', 'links', 'images'])
+    filters: List[str] = field(default_factory=lambda: ['length', 'quality', 'language'])
+    enrichers: List[str] = field(default_factory=lambda: ['keywords', 'topics', 'sentiment'])
+    
+    async def process(self, soup: BeautifulSoup, url: str, config: Dict) -> Dict[str, Any]:
+        """Process content through extraction pipeline"""
+        result = {
+            'url': url,
+            'processed_at': datetime.utcnow(),
+            'pipeline_version': '2.0'
+        }
+        
+        # Content extraction phase
+        for extractor in self.extractors:
+            try:
+                if extractor == 'text':
+                    result['text_content'] = self._extract_enhanced_text(soup, config)
+                elif extractor == 'metadata':
+                    result['metadata'] = self._extract_comprehensive_metadata(soup, url)
+                elif extractor == 'links':
+                    result['links'] = self._extract_categorized_links(soup, url)
+                elif extractor == 'images':
+                    result['images'] = self._extract_image_metadata(soup, url)
+                elif extractor == 'forms':
+                    result['forms'] = self._extract_form_metadata(soup)
+                elif extractor == 'tables':
+                    result['tables'] = self._extract_table_data(soup)
+            except Exception as e:
+                logger.warning(f"Extractor {extractor} failed for {url}: {e}")
+        
+        # Content filtering phase
+        for filter_name in self.filters:
+            try:
+                if filter_name == 'length':
+                    if not self._passes_length_filter(result, config):
+                        result['filtered_reason'] = 'content_too_short'
+                        return result
+                elif filter_name == 'quality':
+                    quality_score = self._calculate_quality_score(result)
+                    result['quality_score'] = quality_score
+                    if quality_score < config.get('min_quality_score', 0.3):
+                        result['filtered_reason'] = 'low_quality'
+                        return result
+                elif filter_name == 'language':
+                    language = self._detect_language(result.get('text_content', ''))
+                    result['detected_language'] = language
+                    allowed_languages = config.get('allowed_languages', [])
+                    if allowed_languages and language not in allowed_languages:
+                        result['filtered_reason'] = 'language_mismatch'
+                        return result
+            except Exception as e:
+                logger.warning(f"Filter {filter_name} failed for {url}: {e}")
+        
+        # Content enrichment phase
+        for enricher in self.enrichers:
+            try:
+                if enricher == 'keywords':
+                    result['extracted_keywords'] = self._extract_keywords(result.get('text_content', ''))
+                elif enricher == 'topics':
+                    result['topic_categories'] = self._categorize_content(result.get('text_content', ''))
+                elif enricher == 'sentiment':
+                    result['sentiment_analysis'] = self._analyze_sentiment(result.get('text_content', ''))
+                elif enricher == 'readability':
+                    result['readability_metrics'] = self._calculate_readability(result.get('text_content', ''))
+            except Exception as e:
+                logger.warning(f"Enricher {enricher} failed for {url}: {e}")
+        
+        result['status'] = 'success'
+        return result
+    
+    def _extract_enhanced_text(self, soup: BeautifulSoup, config: Dict) -> str:
+        """Enhanced text extraction with advanced filtering"""
+        # Advanced content area detection
+        content_selectors = [
+            'main', 'article', '[role="main"]', '.main-content',
+            '.content', '.post-content', '.entry-content',
+            '.article-content', '.page-content', '#content'
+        ]
+        
+        main_content = None
+        for selector in content_selectors:
+            main_content = soup.select_one(selector)
+            if main_content:
+                break
+        
+        if not main_content:
+            main_content = soup.find('body') or soup
+        
+        # Remove noise elements
+        noise_selectors = [
+            'script', 'style', 'nav', 'header', 'footer',
+            '.advertisement', '.sidebar', '.widget', '.popup',
+            '.cookie-notice', '.social-share', '.comments'
+        ]
+        
+        for selector in noise_selectors:
+            for element in main_content.select(selector):
+                element.decompose()
+        
+        # Extract and clean text
+        text = main_content.get_text(separator=' ', strip=True)
+        
+        # Advanced text cleaning
+        import re
+        
+        # Remove excessive whitespace
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Remove common noise patterns
+        text = re.sub(r'(?i)(skip to|jump to|go to) (content|navigation|main)', '', text)
+        text = re.sub(r'(?i)(click here|read more|learn more)(?!\w)', '', text)
+        text = re.sub(r'(?i)copyright \d{4}.*?all rights reserved', '', text)
+        
+        return text.strip()
+    
+    def _extract_image_metadata(self, soup: BeautifulSoup, base_url: str) -> List[Dict]:
+        """Extract comprehensive image metadata"""
+        images = []
+        for img in soup.find_all('img'):
+            if img.get('src'):
+                img_url = urljoin(base_url, img.get('src'))
+                images.append({
+                    'url': img_url,
+                    'alt_text': img.get('alt', ''),
+                    'title': img.get('title', ''),
+                    'width': img.get('width'),
+                    'height': img.get('height'),
+                    'loading': img.get('loading', ''),
+                    'srcset': img.get('srcset', ''),
+                    'sizes': img.get('sizes', '')
+                })
+        return images[:20]  # Limit to prevent huge metadata
+    
+    def _extract_form_metadata(self, soup: BeautifulSoup) -> List[Dict]:
+        """Extract form structure for interaction potential"""
+        forms = []
+        for form in soup.find_all('form'):
+            form_data = {
+                'action': form.get('action', ''),
+                'method': form.get('method', 'get').lower(),
+                'fields': []
+            }
+            
+            for field in form.find_all(['input', 'textarea', 'select']):
+                field_data = {
+                    'type': field.get('type', field.name),
+                    'name': field.get('name', ''),
+                    'required': field.has_attr('required'),
+                    'placeholder': field.get('placeholder', '')
+                }
+                form_data['fields'].append(field_data)
+            
+            forms.append(form_data)
+        
+        return forms[:5]  # Limit form count
+    
+    def _extract_table_data(self, soup: BeautifulSoup) -> List[Dict]:
+        """Extract structured table data"""
+        tables = []
+        for table in soup.find_all('table')[:5]:  # Limit tables
+            rows = []
+            for tr in table.find_all('tr')[:10]:  # Limit rows
+                cells = [td.get_text(strip=True) for td in tr.find_all(['td', 'th'])]
+                if cells:
+                    rows.append(cells)
+            
+            if rows:
+                tables.append({
+                    'headers': rows[0] if rows else [],
+                    'rows': rows[1:] if len(rows) > 1 else [],
+                    'row_count': len(rows),
+                    'column_count': len(rows[0]) if rows else 0
+                })
+        
+        return tables
+    
+    def _extract_keywords(self, text: str) -> List[str]:
+        """Extract keywords using simple frequency analysis"""
+        if not text or len(text) < 100:
+            return []
+        
+        import re
+        from collections import Counter
+        
+        # Simple keyword extraction (in production, use NLTK or spaCy)
+        words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
+        
+        # Filter out common stop words
+        stop_words = {
+            'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
+            'by', 'from', 'this', 'that', 'are', 'was', 'were', 'been', 'have',
+            'has', 'had', 'will', 'would', 'could', 'should', 'may', 'might'
+        }
+        
+        filtered_words = [word for word in words if word not in stop_words and len(word) > 3]
+        
+        # Get most common words
+        counter = Counter(filtered_words)
+        return [word for word, count in counter.most_common(10) if count > 1]
+    
+    def _categorize_content(self, text: str) -> List[str]:
+        """Simple content categorization"""
+        if not text:
+            return []
+        
+        categories = []
+        text_lower = text.lower()
+        
+        # Technical content indicators
+        tech_keywords = ['api', 'documentation', 'code', 'programming', 'development', 'software']
+        if any(keyword in text_lower for keyword in tech_keywords):
+            categories.append('technical')
+        
+        # Business content indicators
+        business_keywords = ['company', 'business', 'product', 'service', 'customer', 'solution']
+        if any(keyword in text_lower for keyword in business_keywords):
+            categories.append('business')
+        
+        # Support content indicators
+        support_keywords = ['help', 'support', 'faq', 'troubleshoot', 'guide', 'tutorial']
+        if any(keyword in text_lower for keyword in support_keywords):
+            categories.append('support')
+        
+        return categories
+    
+    def _analyze_sentiment(self, text: str) -> Dict[str, float]:
+        """Simple sentiment analysis"""
+        if not text:
+            return {'neutral': 1.0}
+        
+        # Simple word-based sentiment (in production, use proper NLP)
+        positive_words = ['good', 'great', 'excellent', 'amazing', 'fantastic', 'wonderful', 'best']
+        negative_words = ['bad', 'terrible', 'awful', 'horrible', 'worst', 'disappointing']
+        
+        text_lower = text.lower()
+        positive_count = sum(1 for word in positive_words if word in text_lower)
+        negative_count = sum(1 for word in negative_words if word in text_lower)
+        
+        total = positive_count + negative_count
+        if total == 0:
+            return {'neutral': 1.0}
+        
+        return {
+            'positive': positive_count / total,
+            'negative': negative_count / total,
+            'neutral': max(0, 1 - (positive_count + negative_count) / len(text.split()) * 10)
+        }
+
+    def _extract_comprehensive_metadata(self, soup: BeautifulSoup, url: str) -> Dict:
+        """Extract comprehensive metadata (reusing existing method)"""
+        # This method already exists in the main class, so we'll call it
+        # For now, return basic metadata - can be enhanced later
+        metadata = {'url': url}
+        
+        # Basic metadata
+        title_tag = soup.find('title')
+        if title_tag:
+            metadata['title'] = title_tag.get_text().strip()
+        
+        # Meta description
+        desc_tag = soup.find('meta', attrs={'name': 'description'})
+        if desc_tag:
+            metadata['description'] = desc_tag.get('content', '').strip()
+        
+        # Language
+        html_tag = soup.find('html')
+        if html_tag and html_tag.get('lang'):
+            metadata['language'] = html_tag.get('lang')
+        
+        return metadata
+    
+    def _extract_categorized_links(self, soup: BeautifulSoup, base_url: str) -> Dict:
+        """Extract and categorize links"""
+        internal_links = []
+        external_links = []
+        
+        parsed_base = urlparse(base_url)
+        base_domain = parsed_base.netloc
+        
+        for link in soup.find_all('a', href=True)[:50]:  # Limit to prevent huge metadata
+            href = link.get('href')
+            if href:
+                absolute_url = urljoin(base_url, href)
+                link_domain = urlparse(absolute_url).netloc
+                
+                link_data = {
+                    'url': absolute_url,
+                    'text': link.get_text().strip()[:100],  # Limit text length
+                    'title': link.get('title', '')
+                }
+                
+                if link_domain == base_domain:
+                    internal_links.append(link_data)
+                else:
+                    external_links.append(link_data)
+        
+        return {
+            'internal': internal_links[:20],  # Limit counts
+            'external': external_links[:10]
+        }
+    
+    def _passes_length_filter(self, result: Dict, config: Dict) -> bool:
+        """Check if content passes length filter"""
+        text_content = result.get('text_content', '')
+        min_word_count = config.get('min_word_count', 10)
+        word_count = len(text_content.split())
+        return word_count >= min_word_count
+    
+    def _calculate_quality_score(self, result: Dict) -> float:
+        """Calculate content quality score"""
+        text_content = result.get('text_content', '')
+        if not text_content:
+            return 0.0
+        
+        score = 0.0
+        
+        # Length score (0-0.3)
+        word_count = len(text_content.split())
+        if word_count > 100:
+            score += 0.3
+        elif word_count > 50:
+            score += 0.2
+        elif word_count > 20:
+            score += 0.1
+        
+        # Structure score (0-0.3)
+        metadata = result.get('metadata', {})
+        if metadata.get('title'):
+            score += 0.1
+        if metadata.get('description'):
+            score += 0.1
+        if result.get('images') and len(result['images']) > 0:
+            score += 0.05
+        if result.get('tables') and len(result['tables']) > 0:
+            score += 0.05
+        
+        # Content richness score (0-0.4)
+        if result.get('extracted_keywords') and len(result['extracted_keywords']) > 3:
+            score += 0.2
+        if result.get('topic_categories') and len(result['topic_categories']) > 0:
+            score += 0.1
+        if result.get('links', {}).get('internal') and len(result['links']['internal']) > 2:
+            score += 0.1
+        
+        return min(1.0, score)
+    
+    def _detect_language(self, text: str) -> str:
+        """Simple language detection"""
+        if not text:
+            return 'unknown'
+        
+        # Very basic language detection based on common words
+        # In production, use langdetect or similar library
+        english_words = ['the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with']
+        spanish_words = ['el', 'la', 'de', 'que', 'y', 'en', 'un', 'es', 'se', 'no', 'te']
+        french_words = ['le', 'de', 'et', 'à', 'un', 'il', 'être', 'et', 'en', 'avoir', 'que']
+        
+        text_lower = text.lower()
+        
+        english_count = sum(1 for word in english_words if word in text_lower)
+        spanish_count = sum(1 for word in spanish_words if word in text_lower)
+        french_count = sum(1 for word in french_words if word in text_lower)
+        
+        if english_count >= spanish_count and english_count >= french_count:
+            return 'en'
+        elif spanish_count >= french_count:
+            return 'es'
+        elif french_count > 0:
+            return 'fr'
+        else:
+            return 'unknown'
+    
+    def _calculate_readability(self, text: str) -> Dict[str, float]:
+        """Calculate readability metrics"""
+        if not text:
+            return {'readability_score': 0.0, 'complexity': 'unknown'}
+        
+        # Simple readability calculation
+        sentences = len([s for s in text.split('.') if s.strip()])
+        words = len(text.split())
+        characters = len(text)
+        
+        if sentences == 0 or words == 0:
+            return {'readability_score': 0.0, 'complexity': 'unknown'}
+        
+        avg_sentence_length = words / sentences
+        avg_word_length = characters / words
+        
+        # Simplified Flesch Reading Ease
+        score = 206.835 - (1.015 * avg_sentence_length) - (84.6 * avg_word_length)
+        normalized_score = max(0.0, min(1.0, score / 100))
+        
+        if score >= 60:
+            complexity = 'easy'
+        elif score >= 30:
+            complexity = 'medium'
+        else:
+            complexity = 'difficult'
+        
+        return {
+            'readability_score': normalized_score,
+            'complexity': complexity,
+            'avg_sentence_length': avg_sentence_length,
+            'avg_word_length': avg_word_length
+        }
+
+@dataclass 
+class SmartRetryMechanism:
+    """Intelligent retry mechanism with adaptive backoff"""
+    max_retries: int = 3
+    base_delay: float = 1.0
+    max_delay: float = 60.0
+    backoff_factor: float = 2.0
+    jitter: bool = True
+    
+    def __init__(self):
+        self.retry_history: Dict[str, List[Dict]] = {}
+        self.domain_health: Dict[str, float] = {}
+    
+    async def execute_with_retry(self, url: str, fetch_func, *args, **kwargs):
+        """Execute function with intelligent retry logic"""
+        domain = urlparse(url).netloc
+        attempt = 0
+        last_exception = None
+        
+        while attempt < self.max_retries:
+            try:
+                # Adjust request based on domain health
+                if domain in self.domain_health:
+                    health_score = self.domain_health[domain]
+                    if health_score < 0.5:
+                        # Slow down requests to unhealthy domains
+                        await asyncio.sleep(2.0)
+                
+                result = await fetch_func(url, *args, **kwargs)
+                
+                # Update domain health on success
+                self._update_domain_health(domain, True)
+                return result
+                
+            except Exception as e:
+                last_exception = e
+                attempt += 1
+                
+                # Log retry attempt
+                self._log_retry_attempt(url, attempt, str(e))
+                
+                # Update domain health on failure
+                self._update_domain_health(domain, False)
+                
+                if attempt < self.max_retries:
+                    delay = self._calculate_delay(attempt, domain)
+                    logger.info(f"Retrying {url} in {delay:.1f}s (attempt {attempt}/{self.max_retries})")
+                    await asyncio.sleep(delay)
+        
+        # All retries exhausted
+        logger.error(f"All retries exhausted for {url}: {last_exception}")
+        raise last_exception
+    
+    def _calculate_delay(self, attempt: int, domain: str) -> float:
+        """Calculate adaptive delay based on attempt and domain health"""
+        base_delay = self.base_delay * (self.backoff_factor ** (attempt - 1))
+        
+        # Adjust delay based on domain health
+        if domain in self.domain_health:
+            health_score = self.domain_health[domain]
+            base_delay *= (2.0 - health_score)  # Slower for unhealthy domains
+        
+        # Add jitter to prevent thundering herd
+        if self.jitter:
+            import random
+            jitter_factor = 0.1 * random.random()
+            base_delay *= (1 + jitter_factor)
+        
+        return min(base_delay, self.max_delay)
+    
+    def _update_domain_health(self, domain: str, success: bool):
+        """Update domain health score"""
+        if domain not in self.domain_health:
+            self.domain_health[domain] = 0.8
+        
+        current_health = self.domain_health[domain]
+        
+        if success:
+            # Gradually improve health on success
+            self.domain_health[domain] = min(1.0, current_health + 0.1)
+        else:
+            # Penalize health on failure
+            self.domain_health[domain] = max(0.1, current_health - 0.2)
+    
+    def _log_retry_attempt(self, url: str, attempt: int, error: str):
+        """Log retry attempt for analysis"""
+        if url not in self.retry_history:
+            self.retry_history[url] = []
+        
+        self.retry_history[url].append({
+            'attempt': attempt,
+            'timestamp': datetime.utcnow(),
+            'error': error
+        })
+
+
 class WebScraperConnector(BaseConnector):
     """Enhanced web scraper connector with comprehensive features"""
     
     def __init__(self, config: ConnectorConfig):
         super().__init__(config)
+        
+        # Initialize advanced components
+        self.url_queue_manager = URLQueueManager()
+        self.content_pipeline = ContentExtractionPipeline()
+        self.retry_mechanism = SmartRetryMechanism()
+        
         self.visited_urls: Set[str] = set()
         self.session: Optional[aiohttp.ClientSession] = None
         self.robots_cache: Dict[str, RobotFileParser] = {}
@@ -360,6 +958,18 @@ class WebScraperConnector(BaseConnector):
             'content_freshness': []
         }
     
+        # Enhanced configuration options
+        self.enable_advanced_pipeline = self.config.auth_config.get('enable_advanced_pipeline', True)
+        self.enable_smart_retry = self.config.auth_config.get('enable_smart_retry', True)
+        self.enable_url_queue_management = self.config.auth_config.get('enable_url_queue_management', True)
+        
+        # Content extraction settings
+        pipeline_config = self.config.auth_config.get('content_pipeline', {})
+        if pipeline_config:
+            self.content_pipeline.extractors = pipeline_config.get('extractors', self.content_pipeline.extractors)
+            self.content_pipeline.filters = pipeline_config.get('filters', self.content_pipeline.filters)
+            self.content_pipeline.enrichers = pipeline_config.get('enrichers', self.content_pipeline.enrichers)
+
     def _configure_security(self, auth_config: Dict):
         """Configure security settings"""
         security_config = auth_config.get('security', {})
@@ -680,6 +1290,16 @@ class WebScraperConnector(BaseConnector):
                 })
         
         return triggered_actions
+    
+    async def authenticate(self) -> Tuple[bool, Optional[str]]:
+        """Authenticate for web scraping (always returns True as no auth required)"""
+        try:
+            # Web scraping typically doesn't require authentication
+            # This method is here to satisfy the BaseConnector interface
+            # For future enhancement, could add proxy auth, API key validation, etc.
+            return True, None
+        except Exception as e:
+            return False, f"Authentication error: {str(e)}"
     
     async def test_connection(self) -> Tuple[bool, Dict[str, Any]]:
         """Test the web scraper configuration"""
@@ -1777,7 +2397,7 @@ class WebScraperConnector(BaseConnector):
             last_crawl=datetime.utcnow()
         )
 
-    async def store_crawled_page(self, db: Session, page_data: Dict, connector_id: str, organization_id: str, domain: str):
+    async def store_crawled_page(self, db: Session, page_data: Dict, connector_id: str, organization_id: str, domain_id: str):
         """Store crawled page in database with proper organization isolation"""
         try:
             url_hash = hashlib.md5(page_data['url'].encode()).hexdigest()
@@ -1806,7 +2426,7 @@ class WebScraperConnector(BaseConnector):
                             error_message = :error_message, file_size = :file_size,
                             content_type = :content_type, title = :title,
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE url_hash = :url_hash AND connector_id = :connector_id AND organization_id = :org_id
+                        WHERE url_hash = :url_hash AND domain_id = :domain_id AND organization_id = :org_id
                     """),
                     {
                         "content": page_data['content'],
@@ -1820,7 +2440,7 @@ class WebScraperConnector(BaseConnector):
                         "content_type": page_data.get('content_type', ''),
                         "title": page_data.get('title', ''),
                         "url_hash": url_hash,
-                        "connector_id": connector_id,
+                        "domain_id": domain_id,
                         "org_id": organization_id
                     }
                 )
@@ -1829,21 +2449,20 @@ class WebScraperConnector(BaseConnector):
                 db.execute(
                     text("""
                         INSERT INTO crawled_pages (
-                            connector_id, organization_id, domain, url, url_hash,
+                            organization_id, domain_id, url, url_hash,
                             title, content, metadata, first_crawled, last_crawled,
                             content_hash, word_count, status, error_message,
                             depth, content_type, file_size, created_at, updated_at
                         ) VALUES (
-                            :connector_id, :organization_id, :domain, :url, :url_hash,
+                            :organization_id, :domain_id, :url, :url_hash,
                             :title, :content, :metadata, :crawled_at, :crawled_at,
                             :content_hash, :word_count, :status, :error_message,
                             :depth, :content_type, :file_size, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                         )
                     """),
                     {
-                        "connector_id": connector_id,
                         "organization_id": organization_id,
-                        "domain": domain,
+                        "domain_id": domain_id,
                         "url": page_data['url'],
                         "url_hash": url_hash,
                         "title": page_data.get('title', ''),
@@ -2776,3 +3395,1126 @@ class WebScraperConnector(BaseConnector):
                 "performance_metrics": asdict(CrawlPerformanceMetrics()),
                 "crawl_efficiency": {}
             } 
+
+    async def crawl_with_advanced_pipeline(
+        self, 
+        db: Session = None, 
+        connector_id: str = None, 
+        organization_id: str = None,
+        domain: str = None,
+        progress_callback = None
+    ) -> List[Dict[str, Any]]:
+        """Enhanced crawl with advanced pipeline and queue management"""
+        crawled_data = []
+        
+        # Start crawl session
+        session_id = await self._start_crawl_session()
+        logger.info(f"Started advanced crawl session: {session_id}")
+        
+        # Initialize URL queue with start URLs
+        if self.enable_url_queue_management:
+            for url in self.start_urls:
+                self.url_queue_manager.add_url(url, priority=1.0, depth=0)
+        else:
+            # Fallback to simple queue
+            url_queue = [(url, 1.0, 0) for url in self.start_urls]
+        
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=60),
+            headers={'User-Agent': self.user_agent}
+        ) as session:
+            
+            processed_count = 0
+            
+            while processed_count < self.max_pages:
+                # Get next URL
+                if self.enable_url_queue_management:
+                    next_url_data = self.url_queue_manager.get_next_url()
+                    if not next_url_data:
+                        break
+                    current_url, priority = next_url_data
+                    depth = 0  # Calculate depth from URL queue manager
+                else:
+                    if not url_queue:
+                        break
+                    current_url, priority, depth = url_queue.pop(0)
+                
+                # Skip if already processed or doesn't match patterns
+                if (current_url in self.visited_urls or 
+                    depth > self.max_depth or
+                    not self._matches_patterns(current_url)):
+                    continue
+                
+                # Check retry eligibility
+                if self.enable_smart_retry and self.enable_url_queue_management:
+                    if not self.url_queue_manager.can_retry(current_url):
+                        logger.debug(f"Skipping {current_url}: max retries exceeded")
+                        continue
+                
+                # Progress callback
+                if progress_callback:
+                    session_status = await self.get_crawl_session_status()
+                    await progress_callback(session_status)
+                
+                try:
+                    # Use smart retry mechanism if enabled
+                    if self.enable_smart_retry:
+                        page_data = await self.retry_mechanism.execute_with_retry(
+                            current_url, 
+                            self._crawl_page_with_pipeline, 
+                            session, 
+                            depth
+                        )
+                    else:
+                        page_data = await self._crawl_page_with_pipeline(current_url, session, depth)
+                    
+                    if page_data and page_data.get('status') == 'success':
+                        # Enhanced quality scoring
+                        quality_score = page_data.get('quality_score', 0.0)
+                        
+                        # Skip low-quality content if filtering is enabled
+                        if quality_score < self.quality_threshold:
+                            logger.debug(f"Skipping low-quality content: {current_url} (score: {quality_score:.2f})")
+                            continue
+                        
+                        # Add to results
+                        crawled_data.append(page_data)
+                        self.visited_urls.add(current_url)
+                        processed_count += 1
+                        
+                        # Store in database if provided
+                        if db and connector_id and organization_id:
+                            await self.store_crawled_page(db, page_data, connector_id, organization_id, domain or "general")
+                        
+                        # Discover new URLs from extracted links
+                        if depth < self.max_depth and 'links' in page_data:
+                            discovered_links = page_data['links'].get('internal', [])
+                            for link_data in discovered_links[:10]:  # Limit new URLs
+                                new_url = link_data.get('url')
+                                if new_url and new_url not in self.visited_urls:
+                                    link_priority = self._calculate_link_priority(link_data, page_data)
+                                    
+                                    if self.enable_url_queue_management:
+                                        self.url_queue_manager.add_url(new_url, link_priority, depth + 1)
+                                    else:
+                                        url_queue.append((new_url, link_priority, depth + 1))
+                    
+                except Exception as e:
+                    logger.error(f"Error crawling {current_url}: {e}")
+                    
+                    # Mark as failed in queue manager
+                    if self.enable_url_queue_management:
+                        self.url_queue_manager.mark_failed(current_url)
+                    
+                    continue
+                
+                # Adaptive delay
+                await asyncio.sleep(self.delay)
+        
+        logger.info(f"Completed advanced crawl session: {session_id}, processed: {processed_count} pages")
+        return crawled_data
+
+    async def _crawl_page_with_pipeline(self, url: str, session: aiohttp.ClientSession, depth: int = 0) -> Optional[Dict[str, Any]]:
+        """Crawl page with advanced content pipeline"""
+        try:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    return self._create_failed_page_data(url, f"HTTP {response.status}", depth)
+                
+                content_type = response.headers.get('content-type', '')
+                if 'text/html' not in content_type:
+                    return self._create_failed_page_data(url, "Not HTML content", depth)
+                
+                # Check file size
+                content_length = response.headers.get('content-length')
+                if content_length and int(content_length) > self.max_file_size:
+                    return self._create_failed_page_data(url, f"File too large ({content_length} bytes)", depth)
+                
+                html_content = await response.text()
+                soup = BeautifulSoup(html_content, 'html.parser')
+                
+                # Process through advanced pipeline
+                if self.enable_advanced_pipeline:
+                    pipeline_config = {
+                        'min_word_count': self.config.auth_config.get('content_filters', {}).get('min_word_count', 10),
+                        'min_quality_score': self.quality_threshold,
+                        'allowed_languages': self.config.auth_config.get('allowed_languages', [])
+                    }
+                    
+                    page_data = await self.content_pipeline.process(soup, url, pipeline_config)
+                    
+                    # Add standard fields
+                    page_data.update({
+                        'crawled_at': datetime.utcnow(),
+                        'depth': depth,
+                        'content_type': content_type,
+                        'file_size': len(html_content.encode('utf-8')),
+                        'word_count': len(page_data.get('text_content', '').split()),
+                        'content_hash': hashlib.md5(page_data.get('text_content', '').encode()).hexdigest()
+                    })
+                    
+                    # Check if content was filtered
+                    if 'filtered_reason' in page_data:
+                        page_data['status'] = 'filtered'
+                        logger.debug(f"Content filtered for {url}: {page_data['filtered_reason']}")
+                    
+                    return page_data
+                else:
+                    # Fallback to basic extraction
+                    return await self._crawl_page(url, session)
+                
+        except Exception as e:
+            logger.error(f"Error processing page {url}: {e}")
+            return self._create_failed_page_data(url, str(e), depth)
+
+    def _calculate_link_priority(self, link_data: Dict, parent_page_data: Dict) -> float:
+        """Calculate priority for discovered links"""
+        priority = 0.5  # Base priority
+        
+        # Priority based on link text
+        link_text = link_data.get('text', '').lower()
+        high_value_terms = ['documentation', 'guide', 'tutorial', 'api', 'help', 'support']
+        medium_value_terms = ['about', 'contact', 'services', 'products']
+        
+        if any(term in link_text for term in high_value_terms):
+            priority += 0.3
+        elif any(term in link_text for term in medium_value_terms):
+            priority += 0.1
+        
+        # Priority based on URL structure
+        url = link_data.get('url', '')
+        if '/docs/' in url or '/documentation/' in url:
+            priority += 0.2
+        elif '/api/' in url or '/help/' in url:
+            priority += 0.15
+        elif '/blog/' in url or '/news/' in url:
+            priority += 0.05
+        
+        # Inherit some priority from parent page
+        parent_quality = parent_page_data.get('quality_score', 0.5)
+        priority += parent_quality * 0.1
+        
+        return min(1.0, priority)
+
+    async def get_advanced_crawler_analytics(self, db: Session, connector_id: str, organization_id: str) -> Dict[str, Any]:
+        """Get comprehensive advanced analytics for the crawler"""
+        try:
+            # Enhanced crawl performance analytics
+            performance_stats = db.execute(
+                text("""
+                    SELECT 
+                        AVG(word_count) as avg_word_count,
+                        STDDEV(word_count) as word_count_stddev,
+                        COUNT(*) as total_pages,
+                        COUNT(DISTINCT domain) as unique_domains,
+                        AVG(CASE WHEN metadata->>'quality_score' IS NOT NULL 
+                            THEN CAST(metadata->>'quality_score' AS FLOAT) END) as avg_quality_score
+                    FROM crawled_pages 
+                    WHERE connector_id = :connector_id AND organization_id = :org_id
+                    AND last_crawled > NOW() - INTERVAL '30 days'
+                """),
+                {"connector_id": connector_id, "org_id": organization_id}
+            ).fetchone()
+            
+            return {
+                "performance_analytics": {
+                    "avg_word_count": float(performance_stats.avg_word_count or 0),
+                    "word_count_variance": float(performance_stats.word_count_stddev or 0),
+                    "total_pages": performance_stats.total_pages or 0,
+                    "domain_diversity": performance_stats.unique_domains or 0,
+                    "avg_quality_score": float(performance_stats.avg_quality_score or 0)
+                },
+                "pipeline_analytics": await self._get_pipeline_effectiveness_metrics(db, connector_id, organization_id),
+                "optimization_insights": await self._generate_optimization_insights(db, connector_id, organization_id)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting advanced analytics: {e}")
+            return {"error": str(e)}
+
+    async def optimize_crawler_settings(self, db: Session, connector_id: str, organization_id: str) -> Dict[str, Any]:
+        """Generate data-driven optimization recommendations"""
+        try:
+            # Analyze current performance patterns
+            analytics = await self.get_advanced_crawler_analytics(db, connector_id, organization_id)
+            
+            recommendations = []
+            
+            # Quality-based optimization
+            avg_quality = analytics.get("performance_analytics", {}).get("avg_quality_score", 0)
+            if avg_quality < 0.5:
+                recommendations.append({
+                    "type": "quality_improvement",
+                    "priority": "high",
+                    "suggestion": "Increase content quality threshold to filter low-value pages",
+                    "current_value": avg_quality,
+                    "recommended_value": 0.6,
+                    "expected_impact": "25% reduction in storage, improved search relevance"
+                })
+            
+            # Performance optimization
+            total_pages = analytics.get("performance_analytics", {}).get("total_pages", 0)
+            if total_pages > 10000:
+                recommendations.append({
+                    "type": "scale_optimization",
+                    "priority": "medium",
+                    "suggestion": "Enable incremental crawling to reduce redundant processing",
+                    "current_value": "full_crawl",
+                    "recommended_value": "incremental",
+                    "expected_impact": "60% faster crawl times"
+                })
+            
+            return {
+                "optimization_score": self._calculate_crawler_optimization_score(analytics),
+                "recommendations": recommendations,
+                "performance_forecast": await self._forecast_crawl_performance(db, connector_id, organization_id)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error optimizing crawler settings: {e}")
+            return {"error": str(e)}
+
+    async def _get_pipeline_effectiveness_metrics(self, db: Session, connector_id: str, organization_id: str) -> Dict[str, Any]:
+        """Calculate effectiveness metrics for the content extraction pipeline"""
+        try:
+            # Pipeline success rates
+            pipeline_stats = db.execute(
+                text("""
+                    SELECT 
+                        COUNT(*) as total_processed,
+                        COUNT(CASE WHEN status = 'success' THEN 1 END) as successful_extractions,
+                        COUNT(CASE WHEN metadata->>'extracted_keywords' IS NOT NULL THEN 1 END) as keyword_extractions,
+                        COUNT(CASE WHEN metadata->>'topic_categories' IS NOT NULL THEN 1 END) as topic_extractions,
+                        AVG(CASE WHEN metadata->>'readability_score' IS NOT NULL 
+                            THEN CAST(metadata->>'readability_score' AS FLOAT) END) as avg_readability
+                    FROM crawled_pages 
+                    WHERE connector_id = :connector_id AND organization_id = :org_id
+                    AND last_crawled > NOW() - INTERVAL '7 days'
+                """),
+                {"connector_id": connector_id, "org_id": organization_id}
+            ).fetchone()
+            
+            total = pipeline_stats.total_processed or 1
+            
+            return {
+                "extraction_success_rate": (pipeline_stats.successful_extractions or 0) / total,
+                "keyword_extraction_rate": (pipeline_stats.keyword_extractions or 0) / total,
+                "topic_extraction_rate": (pipeline_stats.topic_extractions or 0) / total,
+                "avg_readability_score": float(pipeline_stats.avg_readability or 0),
+                "pipeline_efficiency": self._calculate_pipeline_efficiency(pipeline_stats)
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error calculating pipeline metrics: {e}")
+            return {}
+
+    async def _generate_optimization_insights(self, db: Session, connector_id: str, organization_id: str) -> List[Dict[str, Any]]:
+        """Generate actionable optimization insights"""
+        insights = []
+        
+        try:
+            # URL pattern analysis
+            url_patterns = db.execute(
+                text("""
+                    SELECT 
+                        REGEXP_REPLACE(url, '[0-9]+', 'N', 'g') as url_pattern,
+                        COUNT(*) as frequency,
+                        AVG(word_count) as avg_content_length,
+                        AVG(CASE WHEN metadata->>'quality_score' IS NOT NULL 
+                            THEN CAST(metadata->>'quality_score' AS FLOAT) END) as avg_quality
+                    FROM crawled_pages 
+                    WHERE connector_id = :connector_id AND organization_id = :org_id
+                    GROUP BY url_pattern
+                    HAVING COUNT(*) > 5
+                    ORDER BY frequency DESC
+                    LIMIT 10
+                """),
+                {"connector_id": connector_id, "org_id": organization_id}
+            ).fetchall()
+            
+            for pattern in url_patterns:
+                if pattern.avg_quality and pattern.avg_quality < 0.4:
+                    insights.append({
+                        "type": "url_pattern_exclusion",
+                        "message": f"URL pattern '{pattern.url_pattern}' shows low quality content",
+                        "impact": f"Excluding would save {pattern.frequency} pages with avg quality {pattern.avg_quality:.2f}",
+                        "recommendation": f"Add exclude pattern: {pattern.url_pattern}"
+                    })
+            
+            # Content type analysis
+            content_types = db.execute(
+                text("""
+                    SELECT 
+                        content_type,
+                        COUNT(*) as frequency,
+                        AVG(word_count) as avg_word_count
+                    FROM crawled_pages 
+                    WHERE connector_id = :connector_id AND organization_id = :org_id
+                    GROUP BY content_type
+                    ORDER BY frequency DESC
+                """),
+                {"connector_id": connector_id, "org_id": organization_id}
+            ).fetchall()
+            
+            for content_type in content_types:
+                if content_type.avg_word_count and content_type.avg_word_count < 50:
+                    insights.append({
+                        "type": "content_type_filtering",
+                        "message": f"Content type '{content_type.content_type}' has minimal text content",
+                        "impact": f"Filtering would reduce {content_type.frequency} low-value pages",
+                        "recommendation": f"Consider excluding content type: {content_type.content_type}"
+                    })
+            
+        except Exception as e:
+            logger.warning(f"Error generating optimization insights: {e}")
+        
+        return insights
+
+    def _calculate_pipeline_efficiency(self, stats) -> float:
+        """Calculate overall pipeline efficiency score"""
+        if not stats.total_processed:
+            return 0.0
+        
+        extraction_rate = (stats.successful_extractions or 0) / stats.total_processed
+        enhancement_rate = ((stats.keyword_extractions or 0) + (stats.topic_extractions or 0)) / (2 * stats.total_processed)
+        
+        return (extraction_rate * 0.6 + enhancement_rate * 0.4)
+
+    def _calculate_crawler_optimization_score(self, analytics: Dict) -> float:
+        """Calculate overall crawler optimization score (0-100)"""
+        performance = analytics.get("performance_analytics", {})
+        pipeline = analytics.get("pipeline_analytics", {})
+        
+        # Quality score (0-30 points)
+        quality_score = min(30, (performance.get("avg_quality_score", 0) * 30))
+        
+        # Pipeline efficiency (0-25 points)
+        pipeline_score = min(25, (pipeline.get("pipeline_efficiency", 0) * 25))
+        
+        # Content diversity (0-20 points)
+        diversity_score = min(20, (performance.get("domain_diversity", 0) / max(1, performance.get("total_pages", 1) / 100)) * 20)
+        
+        # Performance consistency (0-25 points)
+        variance = performance.get("word_count_variance", 0)
+        avg_words = performance.get("avg_word_count", 1)
+        consistency = max(0, 1 - (variance / max(1, avg_words)))
+        consistency_score = consistency * 25
+        
+        return min(100, quality_score + pipeline_score + diversity_score + consistency_score)
+
+    async def _forecast_crawl_performance(self, db: Session, connector_id: str, organization_id: str) -> Dict[str, Any]:
+        """Forecast future crawl performance based on historical data"""
+        try:
+            # Get historical performance data
+            historical_data = db.execute(
+                text("""
+                    SELECT 
+                        DATE_TRUNC('day', last_crawled) as crawl_date,
+                        COUNT(*) as pages_crawled,
+                        AVG(word_count) as avg_content_length,
+                        COUNT(CASE WHEN status = 'success' THEN 1 END) as successful_pages
+                    FROM crawled_pages 
+                    WHERE connector_id = :connector_id AND organization_id = :org_id
+                    AND last_crawled > NOW() - INTERVAL '30 days'
+                    GROUP BY DATE_TRUNC('day', last_crawled)
+                    ORDER BY crawl_date DESC
+                    LIMIT 30
+                """),
+                {"connector_id": connector_id, "org_id": organization_id}
+            ).fetchall()
+            
+            if len(historical_data) < 3:
+                return {"forecast": "Insufficient historical data for prediction"}
+            
+            # Simple trend analysis
+            pages_trend = []
+            quality_trend = []
+            
+            for day in historical_data:
+                pages_trend.append(day.pages_crawled)
+                success_rate = (day.successful_pages / max(1, day.pages_crawled)) * 100
+                quality_trend.append(success_rate)
+            
+            # Calculate trends
+            avg_pages_per_day = statistics.mean(pages_trend)
+            avg_success_rate = statistics.mean(quality_trend)
+            
+            # Simple linear trend
+            recent_avg = statistics.mean(pages_trend[:7]) if len(pages_trend) >= 7 else avg_pages_per_day
+            older_avg = statistics.mean(pages_trend[7:14]) if len(pages_trend) >= 14 else avg_pages_per_day
+            
+            growth_rate = (recent_avg - older_avg) / max(1, older_avg) if older_avg > 0 else 0
+            
+            return {
+                "avg_pages_per_day": round(avg_pages_per_day, 1),
+                "success_rate_percentage": round(avg_success_rate, 1),
+                "growth_rate_percentage": round(growth_rate * 100, 1),
+                "predicted_next_week": round(avg_pages_per_day * 7 * (1 + growth_rate), 0),
+                "trend": "increasing" if growth_rate > 0.05 else "decreasing" if growth_rate < -0.05 else "stable"
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error forecasting performance: {e}")
+            return {"forecast": "Error generating forecast"}
+
+
+# ============================================================================
+# MACHINE LEARNING ENHANCEMENTS
+# ============================================================================
+
+@dataclass
+class MLContentClassifier:
+    """Machine learning-based content classification and quality prediction"""
+    model_type: str = "ensemble"
+    confidence_threshold: float = 0.7
+    feature_extractors: List[str] = field(default_factory=lambda: [
+        'text_statistics', 'structure_analysis', 'semantic_features', 'readability_metrics'
+    ])
+    
+    def extract_features(self, content: str, metadata: Dict, soup: BeautifulSoup) -> Dict[str, float]:
+        """Extract comprehensive feature set for ML classification"""
+        features = {}
+        
+        # Text statistical features
+        if 'text_statistics' in self.feature_extractors:
+            features.update(self._extract_text_statistics(content))
+        
+        # HTML structure features
+        if 'structure_analysis' in self.feature_extractors:
+            features.update(self._extract_structure_features(soup))
+        
+        # Semantic features
+        if 'semantic_features' in self.feature_extractors:
+            features.update(self._extract_semantic_features(content))
+        
+        # Readability features
+        if 'readability_metrics' in self.feature_extractors:
+            features.update(self._extract_readability_features(content))
+        
+        return features
+    
+    def _extract_text_statistics(self, content: str) -> Dict[str, float]:
+        """Extract statistical features from text content"""
+        if not content:
+            return {}
+        
+        words = content.split()
+        sentences = [s.strip() for s in content.split('.') if s.strip()]
+        
+        return {
+            'word_count': len(words),
+            'sentence_count': len(sentences),
+            'avg_word_length': statistics.mean([len(word) for word in words]) if words else 0,
+            'avg_sentence_length': statistics.mean([len(sentence.split()) for sentence in sentences]) if sentences else 0,
+            'unique_word_ratio': len(set(words)) / max(1, len(words)),
+            'punctuation_density': sum(1 for char in content if char in '.,!?;:') / max(1, len(content)),
+            'uppercase_ratio': sum(1 for char in content if char.isupper()) / max(1, len(content)),
+            'digit_density': sum(1 for char in content if char.isdigit()) / max(1, len(content))
+        }
+    
+    def _extract_structure_features(self, soup: BeautifulSoup) -> Dict[str, float]:
+        """Extract HTML structure features"""
+        return {
+            'heading_count': len(soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])),
+            'paragraph_count': len(soup.find_all('p')),
+            'link_density': len(soup.find_all('a', href=True)) / max(1, len(soup.get_text().split())),
+            'image_count': len(soup.find_all('img')),
+            'list_count': len(soup.find_all(['ul', 'ol'])),
+            'table_count': len(soup.find_all('table')),
+            'form_count': len(soup.find_all('form')),
+            'script_count': len(soup.find_all('script')),
+            'css_count': len(soup.find_all('style')) + len(soup.find_all('link', rel='stylesheet')),
+            'html_text_ratio': len(soup.get_text()) / max(1, len(str(soup)))
+        }
+    
+    def _extract_semantic_features(self, content: str) -> Dict[str, float]:
+        """Extract semantic features using keyword analysis"""
+        if not content:
+            return {}
+        
+        content_lower = content.lower()
+        
+        # Topic indicators
+        tech_keywords = ['api', 'code', 'programming', 'software', 'development', 'documentation']
+        business_keywords = ['company', 'product', 'service', 'customer', 'business', 'solution']
+        support_keywords = ['help', 'support', 'faq', 'guide', 'tutorial', 'troubleshoot']
+        news_keywords = ['news', 'article', 'update', 'announcement', 'press', 'release']
+        
+        return {
+            'tech_content_score': sum(1 for kw in tech_keywords if kw in content_lower) / len(tech_keywords),
+            'business_content_score': sum(1 for kw in business_keywords if kw in content_lower) / len(business_keywords),
+            'support_content_score': sum(1 for kw in support_keywords if kw in content_lower) / len(support_keywords),
+            'news_content_score': sum(1 for kw in news_keywords if kw in content_lower) / len(news_keywords),
+            'question_density': content.count('?') / max(1, len(content.split())),
+            'exclamation_density': content.count('!') / max(1, len(content.split())),
+            'numerical_content_ratio': len([w for w in content.split() if any(c.isdigit() for c in w)]) / max(1, len(content.split()))
+        }
+    
+    def _extract_readability_features(self, content: str) -> Dict[str, float]:
+        """Extract readability and linguistic features"""
+        if not content:
+            return {}
+        
+        words = content.split()
+        sentences = [s.strip() for s in content.split('.') if s.strip()]
+        
+        # Complex word analysis (words with 3+ syllables)
+        complex_words = []
+        for word in words:
+            syllable_count = len([char for char in word.lower() if char in 'aeiou'])
+            if syllable_count >= 3:
+                complex_words.append(word)
+        
+        return {
+            'complex_word_ratio': len(complex_words) / max(1, len(words)),
+            'syllable_density': sum(len([c for c in word if c.lower() in 'aeiou']) for word in words) / max(1, len(words)),
+            'passive_voice_indicators': sum(1 for phrase in ['was', 'were', 'been', 'being'] if phrase in content.lower()) / max(1, len(words)),
+            'transition_word_density': sum(1 for phrase in ['however', 'therefore', 'moreover', 'furthermore', 'additionally'] if phrase in content.lower()) / max(1, len(words))
+        }
+    
+    def predict_content_quality(self, features: Dict[str, float]) -> Dict[str, Any]:
+        """Predict content quality using extracted features"""
+        # Simplified ML prediction (in production, use trained models)
+        quality_score = 0.0
+        confidence = 0.0
+        
+        # Quality indicators
+        if features.get('word_count', 0) > 100:
+            quality_score += 0.2
+        if features.get('heading_count', 0) > 0:
+            quality_score += 0.15
+        if features.get('unique_word_ratio', 0) > 0.5:
+            quality_score += 0.15
+        if features.get('html_text_ratio', 0) > 0.3:
+            quality_score += 0.15
+        if features.get('complex_word_ratio', 0) > 0.1:
+            quality_score += 0.1
+        
+        # Content type prediction
+        content_type = "general"
+        if features.get('tech_content_score', 0) > 0.3:
+            content_type = "technical"
+        elif features.get('business_content_score', 0) > 0.3:
+            content_type = "business"
+        elif features.get('support_content_score', 0) > 0.3:
+            content_type = "support"
+        elif features.get('news_content_score', 0) > 0.3:
+            content_type = "news"
+        
+        # Calculate confidence based on feature strength
+        feature_strength = statistics.mean([v for v in features.values() if isinstance(v, (int, float)) and v > 0])
+        confidence = min(1.0, feature_strength * 2)
+        
+        return {
+            'quality_score': min(1.0, quality_score),
+            'confidence': confidence,
+            'predicted_type': content_type,
+            'feature_importance': self._calculate_feature_importance(features),
+            'quality_reasons': self._generate_quality_reasons(features, quality_score)
+        }
+    
+    def _calculate_feature_importance(self, features: Dict[str, float]) -> Dict[str, float]:
+        """Calculate relative importance of features for quality prediction"""
+        important_features = {
+            'word_count': 0.25,
+            'unique_word_ratio': 0.20,
+            'heading_count': 0.15,
+            'html_text_ratio': 0.15,
+            'complex_word_ratio': 0.10,
+            'avg_sentence_length': 0.10,
+            'link_density': 0.05
+        }
+        
+        # Normalize by actual feature values
+        importance = {}
+        for feature, weight in important_features.items():
+            feature_value = features.get(feature, 0)
+            importance[feature] = weight * min(1.0, feature_value / 100 if feature == 'word_count' else feature_value)
+        
+        return importance
+    
+    def _generate_quality_reasons(self, features: Dict[str, float], quality_score: float) -> List[str]:
+        """Generate human-readable reasons for quality score"""
+        reasons = []
+        
+        if features.get('word_count', 0) > 500:
+            reasons.append("Substantial content length")
+        elif features.get('word_count', 0) < 50:
+            reasons.append("Content too short")
+        
+        if features.get('heading_count', 0) > 3:
+            reasons.append("Well-structured with headings")
+        elif features.get('heading_count', 0) == 0:
+            reasons.append("Lacks structural organization")
+        
+        if features.get('unique_word_ratio', 0) > 0.7:
+            reasons.append("Rich vocabulary diversity")
+        elif features.get('unique_word_ratio', 0) < 0.3:
+            reasons.append("Limited vocabulary")
+        
+        if features.get('html_text_ratio', 0) > 0.5:
+            reasons.append("High content-to-markup ratio")
+        elif features.get('html_text_ratio', 0) < 0.2:
+            reasons.append("Content diluted by markup")
+        
+        return reasons
+
+
+# ============================================================================
+# COMPETITIVE INTELLIGENCE FEATURES
+# ============================================================================
+
+@dataclass
+class CompetitiveIntelligence:
+    """Competitive analysis and market intelligence capabilities"""
+    competitor_domains: List[str] = field(default_factory=list)
+    analysis_dimensions: List[str] = field(default_factory=lambda: [
+        'content_volume', 'update_frequency', 'topic_coverage', 'quality_metrics'
+    ])
+    
+    async def analyze_competitive_landscape(self, db: Session, organization_id: str) -> Dict[str, Any]:
+        """Analyze competitive landscape across crawler data"""
+        try:
+            # Aggregate competitive data
+            competitive_data = db.execute(
+                text("""
+                    SELECT 
+                        REGEXP_REPLACE(url, '^https?://([^/]+).*', '\\1') as domain,
+                        COUNT(*) as page_count,
+                        AVG(word_count) as avg_content_length,
+                        MAX(last_crawled) as latest_update,
+                        AVG(CASE WHEN metadata->>'quality_score' IS NOT NULL 
+                            THEN CAST(metadata->>'quality_score' AS FLOAT) END) as avg_quality,
+                        COUNT(DISTINCT CASE WHEN metadata->>'topic_categories' IS NOT NULL 
+                            THEN metadata->>'topic_categories' END) as topic_diversity
+                    FROM crawled_pages 
+                    WHERE organization_id = :org_id
+                    AND last_crawled > NOW() - INTERVAL '90 days'
+                    GROUP BY REGEXP_REPLACE(url, '^https?://([^/]+).*', '\\1')
+                    HAVING COUNT(*) > 10
+                    ORDER BY page_count DESC
+                    LIMIT 20
+                """),
+                {"org_id": organization_id}
+            ).fetchall()
+            
+            # Analyze market positioning
+            market_analysis = self._analyze_market_positioning(competitive_data)
+            
+            # Content gap analysis
+            content_gaps = await self._identify_content_gaps(db, organization_id, competitive_data)
+            
+            # Trend analysis
+            trend_analysis = await self._analyze_content_trends(db, organization_id)
+            
+            return {
+                "competitive_landscape": {
+                    "total_competitors_analyzed": len(competitive_data),
+                    "market_leaders": [
+                        {
+                            "domain": comp.domain,
+                            "page_count": comp.page_count,
+                            "avg_quality": float(comp.avg_quality or 0),
+                            "market_share": comp.page_count / sum(c.page_count for c in competitive_data) * 100
+                        }
+                        for comp in competitive_data[:5]
+                    ],
+                    "market_analysis": market_analysis
+                },
+                "content_opportunities": content_gaps,
+                "trend_insights": trend_analysis,
+                "competitive_recommendations": self._generate_competitive_recommendations(competitive_data, content_gaps)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing competitive landscape: {e}")
+            return {"error": str(e)}
+    
+    def _analyze_market_positioning(self, competitive_data) -> Dict[str, Any]:
+        """Analyze market positioning based on content metrics"""
+        if not competitive_data:
+            return {}
+        
+        # Calculate market segments
+        page_counts = [comp.page_count for comp in competitive_data]
+        quality_scores = [float(comp.avg_quality or 0) for comp in competitive_data]
+        
+        high_volume_threshold = statistics.median(page_counts) * 1.5
+        high_quality_threshold = statistics.median(quality_scores) * 1.1
+        
+        segments = {
+            "market_leaders": [],  # High volume + High quality
+            "quality_focused": [],  # Low volume + High quality
+            "volume_focused": [],  # High volume + Low quality
+            "emerging_players": []  # Low volume + Low quality
+        }
+        
+        for comp in competitive_data:
+            volume = comp.page_count
+            quality = float(comp.avg_quality or 0)
+            
+            if volume >= high_volume_threshold and quality >= high_quality_threshold:
+                segments["market_leaders"].append(comp.domain)
+            elif volume < high_volume_threshold and quality >= high_quality_threshold:
+                segments["quality_focused"].append(comp.domain)
+            elif volume >= high_volume_threshold and quality < high_quality_threshold:
+                segments["volume_focused"].append(comp.domain)
+            else:
+                segments["emerging_players"].append(comp.domain)
+        
+        return {
+            "market_segments": segments,
+            "market_concentration": len(segments["market_leaders"]) / len(competitive_data),
+            "quality_vs_volume_correlation": self._calculate_correlation(page_counts, quality_scores)
+        }
+    
+    async def _identify_content_gaps(self, db: Session, organization_id: str, competitive_data) -> List[Dict[str, Any]]:
+        """Identify content gaps and opportunities"""
+        try:
+            # Analyze topic coverage across competitors
+            topic_analysis = db.execute(
+                text("""
+                    SELECT 
+                        REGEXP_REPLACE(url, '^https?://([^/]+).*', '\\1') as domain,
+                        metadata->>'topic_categories' as topics,
+                        COUNT(*) as frequency
+                    FROM crawled_pages 
+                    WHERE organization_id = :org_id
+                    AND metadata->>'topic_categories' IS NOT NULL
+                    AND last_crawled > NOW() - INTERVAL '30 days'
+                    GROUP BY domain, metadata->>'topic_categories'
+                    ORDER BY frequency DESC
+                """),
+                {"org_id": organization_id}
+            ).fetchall()
+            
+            # Find topics with low coverage
+            topic_coverage = {}
+            for analysis in topic_analysis:
+                topics = analysis.topics
+                if topics:
+                    for topic in topics.split(','):
+                        topic = topic.strip()
+                        if topic not in topic_coverage:
+                            topic_coverage[topic] = []
+                        topic_coverage[topic].append(analysis.domain)
+            
+            gaps = []
+            for topic, domains in topic_coverage.items():
+                if len(domains) < 3:  # Low competition
+                    gaps.append({
+                        "topic": topic,
+                        "competition_level": "low",
+                        "covering_domains": domains,
+                        "opportunity_score": self._calculate_opportunity_score(topic, len(domains))
+                    })
+            
+            return sorted(gaps, key=lambda x: x["opportunity_score"], reverse=True)[:10]
+            
+        except Exception as e:
+            logger.warning(f"Error identifying content gaps: {e}")
+            return []
+    
+    async def _analyze_content_trends(self, db: Session, organization_id: str) -> Dict[str, Any]:
+        """Analyze content trends across time periods"""
+        try:
+            # Weekly content volume trends
+            weekly_trends = db.execute(
+                text("""
+                    SELECT 
+                        DATE_TRUNC('week', last_crawled) as week,
+                        COUNT(*) as page_count,
+                        AVG(word_count) as avg_content_length,
+                        COUNT(DISTINCT REGEXP_REPLACE(url, '^https?://([^/]+).*', '\\1')) as active_domains
+                    FROM crawled_pages 
+                    WHERE organization_id = :org_id
+                    AND last_crawled > NOW() - INTERVAL '12 weeks'
+                    GROUP BY DATE_TRUNC('week', last_crawled)
+                    ORDER BY week DESC
+                """),
+                {"org_id": organization_id}
+            ).fetchall()
+            
+            if len(weekly_trends) < 2:
+                return {"trends": "Insufficient data for trend analysis"}
+            
+            # Calculate trend direction
+            recent_volume = statistics.mean([t.page_count for t in weekly_trends[:4]])
+            older_volume = statistics.mean([t.page_count for t in weekly_trends[4:8]]) if len(weekly_trends) >= 8 else recent_volume
+            
+            volume_trend = (recent_volume - older_volume) / max(1, older_volume)
+            
+            return {
+                "content_volume_trend": {
+                    "direction": "increasing" if volume_trend > 0.1 else "decreasing" if volume_trend < -0.1 else "stable",
+                    "change_percentage": round(volume_trend * 100, 1)
+                },
+                "market_activity": {
+                    "weekly_avg_pages": round(statistics.mean([t.page_count for t in weekly_trends]), 1),
+                    "avg_active_domains": round(statistics.mean([t.active_domains for t in weekly_trends]), 1)
+                }
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error analyzing trends: {e}")
+            return {}
+    
+    def _calculate_correlation(self, x_values: List[float], y_values: List[float]) -> float:
+        """Calculate correlation coefficient between two variables"""
+        if len(x_values) != len(y_values) or len(x_values) < 2:
+            return 0.0
+        
+        try:
+            import statistics
+            n = len(x_values)
+            mean_x = statistics.mean(x_values)
+            mean_y = statistics.mean(y_values)
+            
+            numerator = sum((x - mean_x) * (y - mean_y) for x, y in zip(x_values, y_values))
+            denominator_x = sum((x - mean_x) ** 2 for x in x_values)
+            denominator_y = sum((y - mean_y) ** 2 for y in y_values)
+            
+            if denominator_x == 0 or denominator_y == 0:
+                return 0.0
+            
+            correlation = numerator / (denominator_x * denominator_y) ** 0.5
+            return max(-1.0, min(1.0, correlation))
+        except:
+            return 0.0
+    
+    def _calculate_opportunity_score(self, topic: str, competitor_count: int) -> float:
+        """Calculate opportunity score for a topic based on competition and relevance"""
+        # Base score inversely related to competition
+        competition_score = max(0, 1 - (competitor_count / 10))
+        
+        # Topic relevance multipliers
+        high_value_topics = ['api', 'documentation', 'tutorial', 'guide', 'integration']
+        medium_value_topics = ['product', 'feature', 'update', 'news', 'blog']
+        
+        relevance_multiplier = 1.0
+        if any(keyword in topic.lower() for keyword in high_value_topics):
+            relevance_multiplier = 1.5
+        elif any(keyword in topic.lower() for keyword in medium_value_topics):
+            relevance_multiplier = 1.2
+        
+        return competition_score * relevance_multiplier
+    
+    def _generate_competitive_recommendations(self, competitive_data, content_gaps) -> List[Dict[str, Any]]:
+        """Generate actionable competitive recommendations"""
+        recommendations = []
+        
+        if competitive_data:
+            top_performer = competitive_data[0]
+            recommendations.append({
+                "type": "benchmark_analysis",
+                "priority": "high",
+                "recommendation": f"Analyze {top_performer.domain} content strategy",
+                "rationale": f"Market leader with {top_performer.page_count} pages and {float(top_performer.avg_quality or 0):.2f} avg quality",
+                "action_items": [
+                    "Study their content structure and topics",
+                    "Analyze their update frequency",
+                    "Identify content gaps in your coverage"
+                ]
+            })
+        
+        if content_gaps:
+            top_gap = content_gaps[0]
+            recommendations.append({
+                "type": "content_opportunity",
+                "priority": "medium",
+                "recommendation": f"Develop content for '{top_gap['topic']}' topic",
+                "rationale": f"Low competition with opportunity score {top_gap['opportunity_score']:.2f}",
+                "action_items": [
+                    "Research audience interest in this topic",
+                    "Create comprehensive content plan",
+                    "Monitor competitor responses"
+                ]
+            })
+        
+        return recommendations
+
+
+# ============================================================================
+# ADVANCED SECURITY & MONITORING
+# ============================================================================
+
+@dataclass
+class AdvancedSecurityMonitor:
+    """Advanced security monitoring and threat detection for web crawling"""
+    threat_indicators: List[str] = field(default_factory=lambda: [
+        'rate_limiting', 'ip_blocking', 'captcha_challenges', 'honeypot_detection',
+        'behavioral_analysis', 'fingerprint_detection'
+    ])
+    alert_thresholds: Dict[str, float] = field(default_factory=lambda: {
+        'error_rate': 0.15,  # 15% error rate
+        'response_time_degradation': 2.0,  # 2x slower than baseline
+        'captcha_frequency': 0.05,  # 5% of requests
+        'block_rate': 0.02  # 2% blocking rate
+    })
+    
+    async def monitor_crawl_security(self, session_metrics: Dict, historical_baseline: Dict) -> Dict[str, Any]:
+        """Monitor crawl session for security threats and anomalies"""
+        threats_detected = []
+        security_score = 100.0
+        
+        # Analyze error patterns
+        error_analysis = self._analyze_error_patterns(session_metrics)
+        if error_analysis['threat_level'] > 0:
+            threats_detected.append(error_analysis)
+            security_score -= error_analysis['threat_level'] * 20
+        
+        # Response time analysis
+        response_analysis = self._analyze_response_degradation(session_metrics, historical_baseline)
+        if response_analysis['anomaly_detected']:
+            threats_detected.append(response_analysis)
+            security_score -= 15
+        
+        # Behavioral pattern analysis
+        behavioral_analysis = self._analyze_crawl_behavior(session_metrics)
+        if behavioral_analysis['suspicious_patterns']:
+            threats_detected.append(behavioral_analysis)
+            security_score -= 25
+        
+        return {
+            "security_status": "secure" if security_score > 80 else "warning" if security_score > 50 else "threat",
+            "security_score": max(0, security_score),
+            "threats_detected": threats_detected,
+            "recommendations": self._generate_security_recommendations(threats_detected),
+            "monitoring_timestamp": datetime.utcnow().isoformat()
+        }
+    
+    def _analyze_error_patterns(self, metrics: Dict) -> Dict[str, Any]:
+        """Analyze error patterns for security threats"""
+        total_requests = metrics.get('total_requests', 1)
+        error_codes = metrics.get('error_codes', {})
+        
+        # Calculate error rates by type
+        error_analysis = {
+            'threat_level': 0,
+            'threat_type': 'error_patterns',
+            'details': {}
+        }
+        
+        # 403 Forbidden - IP blocking
+        forbidden_rate = error_codes.get('403', 0) / total_requests
+        if forbidden_rate > self.alert_thresholds['block_rate']:
+            error_analysis['threat_level'] = min(1.0, forbidden_rate / self.alert_thresholds['block_rate'])
+            error_analysis['details']['ip_blocking'] = f"{forbidden_rate:.1%} of requests blocked"
+        
+        # 429 Rate Limiting
+        rate_limit_rate = error_codes.get('429', 0) / total_requests
+        if rate_limit_rate > 0.01:  # 1% rate limiting
+            error_analysis['threat_level'] = max(error_analysis['threat_level'], 0.5)
+            error_analysis['details']['rate_limiting'] = f"{rate_limit_rate:.1%} rate limited"
+        
+        # 503 Service Unavailable - Possible overload
+        unavailable_rate = error_codes.get('503', 0) / total_requests
+        if unavailable_rate > 0.05:  # 5% unavailable
+            error_analysis['threat_level'] = max(error_analysis['threat_level'], 0.3)
+            error_analysis['details']['service_overload'] = f"{unavailable_rate:.1%} service unavailable"
+        
+        return error_analysis
+    
+    def _analyze_response_degradation(self, current_metrics: Dict, baseline: Dict) -> Dict[str, Any]:
+        """Analyze response time degradation patterns"""
+        current_avg_time = current_metrics.get('avg_response_time', 0)
+        baseline_avg_time = baseline.get('avg_response_time', current_avg_time)
+        
+        if baseline_avg_time == 0:
+            return {'anomaly_detected': False}
+        
+        degradation_ratio = current_avg_time / baseline_avg_time
+        
+        return {
+            'anomaly_detected': degradation_ratio > self.alert_thresholds['response_time_degradation'],
+            'threat_type': 'response_degradation',
+            'degradation_ratio': degradation_ratio,
+            'details': {
+                'current_avg_ms': current_avg_time * 1000,
+                'baseline_avg_ms': baseline_avg_time * 1000,
+                'slowdown_factor': f"{degradation_ratio:.1f}x"
+            }
+        }
+    
+    def _analyze_crawl_behavior(self, metrics: Dict) -> Dict[str, Any]:
+        """Analyze crawl behavior for suspicious patterns"""
+        suspicious_patterns = []
+        
+        # Unusual request patterns
+        request_frequency = metrics.get('requests_per_minute', 0)
+        if request_frequency > 180:  # More than 3 req/sec
+            suspicious_patterns.append({
+                'pattern': 'high_frequency_requests',
+                'value': request_frequency,
+                'risk': 'moderate'
+            })
+        
+        # CAPTCHA detection frequency
+        captcha_rate = metrics.get('captcha_encounters', 0) / max(1, metrics.get('total_requests', 1))
+        if captcha_rate > self.alert_thresholds['captcha_frequency']:
+            suspicious_patterns.append({
+                'pattern': 'frequent_captcha',
+                'value': f"{captcha_rate:.1%}",
+                'risk': 'high'
+            })
+        
+        # Geographic access patterns (if available)
+        unique_ips = metrics.get('unique_source_ips', 1)
+        if unique_ips > 5:  # Multiple IP addresses
+            suspicious_patterns.append({
+                'pattern': 'multiple_ip_sources',
+                'value': unique_ips,
+                'risk': 'low'
+            })
+        
+        return {
+            'suspicious_patterns': suspicious_patterns,
+            'threat_type': 'behavioral_anomaly',
+            'overall_risk': max([p['risk'] for p in suspicious_patterns] + ['low'])
+        }
+    
+    def _generate_security_recommendations(self, threats: List[Dict]) -> List[Dict[str, str]]:
+        """Generate security recommendations based on detected threats"""
+        recommendations = []
+        
+        for threat in threats:
+            threat_type = threat.get('threat_type', '')
+            
+            if threat_type == 'error_patterns':
+                if 'ip_blocking' in threat.get('details', {}):
+                    recommendations.append({
+                        'type': 'ip_rotation',
+                        'action': 'Enable IP rotation or proxy usage',
+                        'priority': 'high'
+                    })
+                if 'rate_limiting' in threat.get('details', {}):
+                    recommendations.append({
+                        'type': 'delay_adjustment',
+                        'action': 'Increase crawl delay between requests',
+                        'priority': 'medium'
+                    })
+            
+            elif threat_type == 'response_degradation':
+                recommendations.append({
+                    'type': 'load_reduction',
+                    'action': 'Reduce concurrent requests or implement backoff',
+                    'priority': 'medium'
+                })
+            
+            elif threat_type == 'behavioral_anomaly':
+                recommendations.append({
+                    'type': 'stealth_mode',
+                    'action': 'Enable stealth crawling techniques',
+                    'priority': 'high'
+                })
+        
+        # Default recommendations if no specific threats
+        if not recommendations:
+            recommendations.append({
+                'type': 'monitoring',
+                'action': 'Continue monitoring crawl patterns',
+                'priority': 'low'
+            })
+        
+        return recommendations
+

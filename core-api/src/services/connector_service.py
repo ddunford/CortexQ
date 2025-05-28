@@ -3,16 +3,45 @@ Connector Service
 Main service for managing data source connectors
 """
 
+import json
 from typing import Dict, Any, Optional, Type
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+import uuid
 
-from services.base_connector import BaseConnector, ConnectorConfig
+from schemas.connector_schemas import ConnectorType
+from services.base_connector import BaseConnector, SyncResult, ConnectorConfig
 from services.oauth_service import OAuthService
-from connectors.jira_connector import JiraConnector
-from schemas.connector_schemas import ConnectorType, ConnectorResponse
-from models import Connector, SyncJob
 
+# Import connector implementations (these would be in separate files)
+# Make imports optional and create placeholders if not available
+try:
+    from connectors.jira_connector import JiraConnector
+except ImportError:
+    JiraConnector = BaseConnector
+
+try:
+    from connectors.github_connector import GitHubConnector
+except ImportError:
+    GitHubConnector = BaseConnector
+
+try:
+    from connectors.confluence_connector import ConfluenceConnector
+except ImportError:
+    ConfluenceConnector = BaseConnector
+
+try:
+    from connectors.slack_connector import SlackConnector
+except ImportError:
+    SlackConnector = BaseConnector
+
+try:
+    from connectors.google_drive_connector import GoogleDriveConnector
+except ImportError:
+    GoogleDriveConnector = BaseConnector
+
+# Remove problematic models import that may cause circular imports
+# from models import Connector, SyncJob
 
 class ConnectorService:
     """Service for managing data source connectors"""
@@ -20,10 +49,10 @@ class ConnectorService:
     # Registry of available connector implementations
     CONNECTOR_REGISTRY: Dict[ConnectorType, Type[BaseConnector]] = {
         ConnectorType.JIRA: JiraConnector,
-        # TODO: Add other connector implementations
-        # ConnectorType.GITHUB: GitHubConnector,
-        # ConnectorType.CONFLUENCE: ConfluenceConnector,
-        # ConnectorType.SLACK: SlackConnector,
+        ConnectorType.GITHUB: GitHubConnector,
+        ConnectorType.CONFLUENCE: ConfluenceConnector,
+        ConnectorType.SLACK: SlackConnector,
+        ConnectorType.GOOGLE_DRIVE: GoogleDriveConnector
     }
     
     def __init__(self, db: Session, oauth_service: OAuthService):
@@ -213,8 +242,10 @@ class ConnectorService:
         """Get connector data from database"""
         result = self.db.execute(
             text("""
-                SELECT * FROM connectors 
-                WHERE id = :connector_id AND organization_id = :org_id
+                SELECT c.*, od.domain_name
+                FROM connectors c 
+                JOIN organization_domains od ON c.domain_id = od.id
+                WHERE c.id = :connector_id AND c.organization_id = :org_id
             """),
             {"connector_id": connector_id, "org_id": organization_id}
         ).fetchone()
@@ -223,7 +254,8 @@ class ConnectorService:
             return {
                 "id": result.id,
                 "organization_id": result.organization_id,
-                "domain": result.domain,
+                "domain_id": result.domain_id,
+                "domain": result.domain_name,  # Keep for backward compatibility
                 "connector_type": result.connector_type,
                 "name": result.name,
                 "is_enabled": result.is_enabled,
@@ -252,29 +284,33 @@ class ConnectorService:
                 SET auth_config = :auth_config, updated_at = CURRENT_TIMESTAMP
                 WHERE id = :connector_id
             """),
-            {"connector_id": connector_id, "auth_config": auth_config}
+            {"connector_id": connector_id, "auth_config": json.dumps(auth_config)}
         )
         self.db.commit()
     
     async def _create_sync_job(self, connector_id: str, organization_id: str, full_sync: bool) -> str:
         """Create a new sync job record"""
-        result = self.db.execute(
+        sync_job_id = str(uuid.uuid4())
+        metadata = {"full_sync": full_sync, "trigger_type": "manual"}
+        
+        self.db.execute(
             text("""
                 INSERT INTO sync_jobs (
-                    connector_id, organization_id, status, metadata, started_at
+                    id, connector_id, organization_id, status, metadata, started_at
                 ) VALUES (
-                    :connector_id, :org_id, 'pending', :metadata, CURRENT_TIMESTAMP
-                ) RETURNING id
+                    :id, :connector_id, :org_id, 'pending', :metadata, CURRENT_TIMESTAMP
+                )
             """),
             {
+                "id": sync_job_id,
                 "connector_id": connector_id,
                 "org_id": organization_id,
-                "metadata": {"full_sync": full_sync, "trigger_type": "manual"}
+                "metadata": json.dumps(metadata)
             }
-        ).fetchone()
+        )
         
         self.db.commit()
-        return str(result.id)
+        return sync_job_id
     
     async def _update_sync_job_status(self, sync_job_id: str, status: str, error_message: Optional[str] = None):
         """Update sync job status"""
@@ -322,7 +358,7 @@ class ConnectorService:
                 "records_created": sync_result.records_created,
                 "records_updated": sync_result.records_updated,
                 "error_message": sync_result.error_message,
-                "result_metadata": sync_result.metadata
+                "result_metadata": json.dumps(sync_result.metadata)
             }
         )
         self.db.commit()

@@ -302,12 +302,31 @@ async def create_organization_domain(
         # Get template settings if template_id provided
         settings = domain_data.settings
         if domain_data.template_id:
-            template = db.execute(
-                text("SELECT suggested_settings FROM domain_templates WHERE id = :template_id"),
-                {"template_id": domain_data.template_id}
-            ).fetchone()
+            # Check if template_id is a valid UUID, otherwise look up by name
+            try:
+                # Try to parse as UUID
+                uuid.UUID(domain_data.template_id)
+                # If successful, query by ID
+                template = db.execute(
+                    text("SELECT suggested_settings FROM domain_templates WHERE id = :template_id"),
+                    {"template_id": domain_data.template_id}
+                ).fetchone()
+            except ValueError:
+                # If not a valid UUID, look up by name
+                template = db.execute(
+                    text("SELECT suggested_settings FROM domain_templates WHERE name = :template_name"),
+                    {"template_name": domain_data.template_id}
+                ).fetchone()
+            
             if template:
-                settings.update(template.suggested_settings or {})
+                template_settings = template.suggested_settings
+                if isinstance(template_settings, str):
+                    # If stored as string, parse it as JSON
+                    try:
+                        template_settings = json.loads(template_settings)
+                    except json.JSONDecodeError:
+                        template_settings = {}
+                settings.update(template_settings or {})
         
         # Create domain
         domain_id = str(uuid.uuid4())
