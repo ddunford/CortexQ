@@ -1,4 +1,4 @@
-# 📋 Enterprise RAG Searcher - Development Task List
+# 📋 CortexQ - Development Task List
 
 This document provides a comprehensive breakdown of development tasks based on the [PRD.md](PRD.md) requirements, organized by development phases and priority.
 

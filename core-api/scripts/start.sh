@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Enterprise RAG Core API Startup Script
+# CortexQ Core API Startup Script
 # Handles database migrations and application startup
 
 set -e
 
-echo "🚀 Starting Enterprise RAG Core API..."
+echo "🚀 Starting CortexQ Core API..."
 
 # Wait for database to be ready
 echo "⏳ Waiting for database connection..."
@@ -15,7 +15,7 @@ import time
 import psycopg2
 from psycopg2 import OperationalError
 
-database_url = os.getenv('DATABASE_URL', 'postgresql://admin:password@postgres:5432/rag_searcher')
+database_url = os.getenv('DATABASE_URL', 'postgresql://admin:password@postgres:5432/cortexq')
 
 # Parse database URL
 if database_url.startswith('postgresql://'):
@@ -54,7 +54,7 @@ import os
 import psycopg2
 from psycopg2 import OperationalError
 
-database_url = os.getenv('DATABASE_URL', 'postgresql://admin:password@postgres:5432/rag_searcher')
+database_url = os.getenv('DATABASE_URL', 'postgresql://admin:password@postgres:5432/cortexq')
 
 try:
     import urllib.parse
@@ -99,7 +99,7 @@ if [ "$FRESH_DEPLOY" = "fresh" ]; then
 import os
 import psycopg2
 
-database_url = os.getenv('DATABASE_URL', 'postgresql://admin:password@postgres:5432/rag_searcher')
+database_url = os.getenv('DATABASE_URL', 'postgresql://admin:password@postgres:5432/cortexq')
 
 try:
     import urllib.parse
@@ -138,6 +138,12 @@ else
 fi
 
 echo "✅ Database migrations completed successfully"
+
+# Run database seeding for RBAC setup
+echo "🌱 Initializing RBAC system (roles, permissions, defaults)..."
+python scripts/seed_database.py
+
+echo "✅ Database initialization completed successfully"
 
 # Start the application
 echo "🎯 Starting Core API application..."

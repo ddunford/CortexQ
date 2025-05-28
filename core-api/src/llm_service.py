@@ -14,8 +14,77 @@ class LLMService:
     
     def __init__(self, base_url: str = "http://ollama:11434"):
         self.base_url = base_url
-        self.model = "llama3.1:8b"  # Use the better model we just installed
+        self.model = None  # Will be set automatically
+        self.preferred_models = [
+            "llama3.2:1b",      # Lightweight, fast
+            "llama3.1:8b",      # More capable
+            "llama2:7b",        # Fallback
+            "codellama:7b",     # Code-focused
+        ]
+        self._initialize_model()
         
+    def _initialize_model(self):
+        """Initialize with the best available model"""
+        try:
+            available_models = self._get_available_models()
+            
+            if not available_models:
+                logger.warning("No Ollama models found. Attempting to pull default model...")
+                self._auto_pull_model("llama3.2:1b")
+                available_models = self._get_available_models()
+            
+            # Select the best available model from preferences
+            selected_model = None
+            for preferred in self.preferred_models:
+                if preferred in available_models:
+                    selected_model = preferred
+                    break
+            
+            if selected_model:
+                self.model = selected_model
+                logger.info(f"LLM Service initialized with model: {self.model}")
+            else:
+                # Use the first available model
+                self.model = available_models[0] if available_models else "llama3.2:1b"
+                logger.warning(f"Using fallback model: {self.model}")
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize LLM model: {e}")
+            self.model = "llama3.2:1b"  # Safe fallback
+    
+    def _get_available_models(self) -> List[str]:
+        """Get list of available models from Ollama"""
+        try:
+            response = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                return [model["name"] for model in data.get("models", [])]
+            return []
+        except Exception as e:
+            logger.error(f"Failed to get available models: {e}")
+            return []
+    
+    def _auto_pull_model(self, model_name: str) -> bool:
+        """Automatically pull a model if none are available"""
+        try:
+            logger.info(f"Auto-pulling model: {model_name}")
+            response = requests.post(
+                f"{self.base_url}/api/pull",
+                json={"name": model_name},
+                timeout=300  # 5 minutes for model download
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"Successfully pulled model: {model_name}")
+                return True
+            else:
+                logger.error(f"Failed to pull model {model_name}: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error pulling model {model_name}: {e}")
+            return False
+    
     def generate_response(
         self, 
         query: str, 

@@ -159,25 +159,37 @@ class FileProcessor:
             
             logger.info(f"Processing file: {file_result.original_filename} (Org: {file_result.org_slug}, Domain: {file_result.domain})")
             
-            # Get file content from MinIO storage
+            # Get file content from storage
             try:
-                from storage_utils import minio_storage
-                
                 if file_result.storage_type == 'minio' and file_result.object_key:
                     # Download file content from MinIO
+                    from storage_utils import minio_storage
                     file_content = minio_storage.download_file(file_result.object_key)
                     if not file_content:
                         logger.error(f"Failed to download file from MinIO: {file_result.object_key}")
                         return False
-                else:
-                    # Legacy local file support (fallback)
+                elif file_result.storage_type == 'local' and file_result.file_path:
+                    # Read file from local storage
                     file_path = Path(file_result.file_path)
                     if not file_path.exists():
-                        logger.error(f"File not found: {file_path}")
+                        logger.error(f"Local file not found: {file_path}")
                         return False
                     
                     with open(file_path, 'rb') as f:
                         file_content = f.read()
+                else:
+                    # Legacy fallback - try object_key as file path
+                    if file_result.object_key:
+                        file_path = Path(file_result.object_key)
+                        if file_path.exists():
+                            with open(file_path, 'rb') as f:
+                                file_content = f.read()
+                        else:
+                            logger.error(f"Neither MinIO object nor local file found for {file_id}")
+                            return False
+                    else:
+                        logger.error(f"No storage location found for file {file_id}")
+                        return False
                         
             except Exception as e:
                 logger.error(f"Failed to read file content for {file_id}: {e}")
@@ -217,7 +229,7 @@ class FileProcessor:
                 try:
                     # Generate real embedding using the embeddings service
                     if self.embeddings_service and self.embeddings_service.is_available():
-                        embedding = self.embeddings_service.encode(chunk)
+                        embedding = await self.embeddings_service.encode_async(chunk)
                         logger.info(f"Generated real embedding for chunk {i} of file {file_result.original_filename} (dimension: {len(embedding)})")
                     else:
                         logger.warning("Embeddings service not available, using mock embedding")
@@ -445,6 +457,62 @@ class BackgroundJobProcessor:
                 }
             )
             db.commit()
+
+    async def queue_file_processing(self, file_id: str, content: bytes, content_type: str, domain: str, organization_id: str):
+        """Queue a file for processing by creating a job record"""
+        db = SessionLocal()
+        try:
+            # Get domain_id from domain name
+            domain_result = db.execute(
+                text("""
+                    SELECT id FROM organization_domains 
+                    WHERE organization_id = :organization_id AND domain_name = :domain_name AND is_active = true
+                """),
+                {"organization_id": organization_id, "domain_name": domain}
+            ).fetchone()
+            
+            if not domain_result:
+                logger.error(f"Domain '{domain}' not found for organization {organization_id}")
+                return False
+            
+            domain_id = str(domain_result.id)
+            
+            # Create processing job
+            job_id = str(uuid.uuid4())
+            db.execute(
+                text("""
+                    INSERT INTO file_processing_jobs (
+                        id, file_id, job_type, status, attempts, max_attempts,
+                        organization_id, domain_id, created_at, updated_at
+                    ) VALUES (
+                        :id, :file_id, :job_type, :status, :attempts, :max_attempts,
+                        :organization_id, :domain_id, :created_at, :updated_at
+                    )
+                """),
+                {
+                    "id": job_id,
+                    "file_id": file_id,
+                    "job_type": "file_processing",
+                    "status": "pending",
+                    "attempts": 0,
+                    "max_attempts": 3,
+                    "organization_id": organization_id,
+                    "domain_id": domain_id,
+                    "created_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+            )
+            
+            db.commit()
+            logger.info(f"Queued file processing job {job_id} for file {file_id} in domain {domain}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to queue file processing for {file_id}: {e}")
+            db.rollback()
+            return False
+        finally:
+            db.close()
 
 
 # Global processor instance

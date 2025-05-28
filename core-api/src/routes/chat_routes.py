@@ -199,15 +199,14 @@ async def chat(
                     user_embedding = embeddings_model.encode([request.message])[0]
                     user_embedding_json = json.dumps(user_embedding.tolist())
                     
-                    # Store user message embedding
+                    # Store user message embedding (without source_id since it's not a file)
                     db.execute(
                         text("""
-                            INSERT INTO embeddings (id, source_id, organization_id, content_text, embedding, domain_id, content_type, created_at)
-                            VALUES (:id, :source_id, :organization_id, :content_text, :embedding, :domain_id, :content_type, :created_at)
+                            INSERT INTO embeddings (id, organization_id, content_text, embedding, domain_id, content_type, created_at)
+                            VALUES (:id, :organization_id, :content_text, :embedding, :domain_id, :content_type, :created_at)
                         """),
                         {
                             "id": str(uuid.uuid4()),
-                            "source_id": session_record.id,  # Use session ID as source
                             "organization_id": organization_id,
                             "content_text": request.message,
                             "embedding": user_embedding_json,
@@ -221,15 +220,14 @@ async def chat(
                     assistant_embedding = embeddings_model.encode([rag_response.response])[0]
                     assistant_embedding_json = json.dumps(assistant_embedding.tolist())
                     
-                    # Store assistant response embedding
+                    # Store assistant response embedding (without source_id since it's not a file)
                     db.execute(
                         text("""
-                            INSERT INTO embeddings (id, source_id, organization_id, content_text, embedding, domain_id, content_type, created_at)
-                            VALUES (:id, :source_id, :organization_id, :content_text, :embedding, :domain_id, :content_type, :created_at)
+                            INSERT INTO embeddings (id, organization_id, content_text, embedding, domain_id, content_type, created_at)
+                            VALUES (:id, :organization_id, :content_text, :embedding, :domain_id, :content_type, :created_at)
                         """),
                         {
                             "id": str(uuid.uuid4()),
-                            "source_id": session_record.id,  # Use session ID as source
                             "organization_id": organization_id,
                             "content_text": rag_response.response,
                             "embedding": assistant_embedding_json,

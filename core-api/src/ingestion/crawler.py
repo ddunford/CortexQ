@@ -31,7 +31,7 @@ class WebCrawler:
         """Async context manager entry"""
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            headers={'User-Agent': 'RAG-Searcher-Bot/1.0'}
+            headers={'User-Agent': 'CortexQ-Bot/1.0'}
         )
         return self
     
@@ -252,7 +252,7 @@ class WebCrawler:
             return True
         
         try:
-            return robots_parser.can_fetch('RAG-Searcher-Bot', url)
+            return robots_parser.can_fetch('CortexQ-Bot', url)
         except:
             return True
     

@@ -1,5 +1,5 @@
 """
-Configuration settings for the Enterprise RAG system
+Configuration settings for the CortexQ system
 """
 
 import os
@@ -17,7 +17,7 @@ class Settings:
         ]
         
         self.max_file_size = int(os.getenv('MAX_FILE_SIZE', 50 * 1024 * 1024))  # 50MB
-        self.database_url = os.getenv('DATABASE_URL', 'postgresql://admin:password@localhost:5432/rag_searcher')
+        self.database_url = os.getenv('DATABASE_URL', 'postgresql://admin:password@localhost:5432/cortexq')
         self.redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
         self.jwt_secret = os.getenv('JWT_SECRET', 'your-super-secret-jwt-key')
         self.debug = os.getenv('DEBUG', 'false').lower() == 'true'

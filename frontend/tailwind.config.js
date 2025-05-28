@@ -8,12 +8,22 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        // CortexQ Brand Colors
+        cortex: {
+          primary: '#2A5DFF',     // Primary Blue
+          navy: '#0A1A3D',        // Deep Navy
+          aqua: '#00D1FF',        // Aqua Accent
+          grey: '#F4F5F7',        // Soft Grey
+          slate: '#5B6770',       // Slate Grey
+          lime: '#B2FF59',        // Lime Pop
+        },
+        // Maintain compatibility with existing colors
         primary: {
           50: '#eff6ff',
           100: '#dbeafe',
-          500: '#3b82f6',
-          600: '#2563eb',
-          700: '#1d4ed8',
+          500: '#2A5DFF',         // CortexQ Primary
+          600: '#2A5DFF',         // CortexQ Primary
+          700: '#0A1A3D',         // CortexQ Navy
         },
       },
     },

@@ -2,8 +2,8 @@ import './globals.css';
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'Enterprise RAG System',
-  description: 'AI-powered document search and chat system',
+  title: 'CortexQ - Ask Smarter. Know Faster.',
+  description: 'AI-powered knowledge management and intelligent conversation platform',
 };
 
 export default function RootLayout({

@@ -1,5 +1,5 @@
 """
-Connectors package for Enterprise RAG API
+Connectors package for CortexQ API
 Contains implementations for various data source connectors
 """
 

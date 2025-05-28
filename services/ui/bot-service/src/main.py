@@ -1,6 +1,6 @@
 """
 Bot Integration Service
-Provides Slack and Microsoft Teams integration for Enterprise RAG system.
+Provides Slack and Microsoft Teams integration for CortexQ system.
 """
 
 from fastapi import FastAPI, HTTPException, Request, Depends
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Bot Integration Service",
-    description="Slack and Teams integration for Enterprise RAG",
+    description="Slack and Teams integration for CortexQ",
     version="1.0.0"
 )
 
@@ -116,7 +116,7 @@ class BotIntegrationManager:
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f"Confidence: {confidence:.1%} | Powered by Enterprise RAG"
+                        "text": f"Confidence: {confidence:.1%} | Powered by CortexQ"
                     }
                 ]
             })

@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException, Depends, File, UploadFile, Form
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from pathlib import Path
 
 from models import FileUploadResponse, WebScrapingRequest, WebScrapingResponse
 from dependencies import get_db, get_current_user, require_permission
@@ -23,6 +24,9 @@ from ingestion.crawler import CrawlScheduler
 
 # Initialize router
 router = APIRouter(tags=["files"])
+
+# Create a separate router for sources (for citation content)
+sources_router = APIRouter(tags=["sources"])
 
 # Initialize services (will be set by main app)
 background_job_processor = None
@@ -180,19 +184,20 @@ async def upload_file(
         # Generate file hash for deduplication
         file_hash = hashlib.sha256(content).hexdigest()
         
-        # Get domain_id from domain name
+        # Get domain_id from domain UUID
         domain_result = db.execute(
             text("""
-                SELECT id FROM organization_domains 
-                WHERE organization_id = :organization_id AND domain_name = :domain_name AND is_active = true
+                SELECT id, domain_name FROM organization_domains 
+                WHERE organization_id = :organization_id AND id = :domain_id AND is_active = true
             """),
-            {"organization_id": organization_id, "domain_name": domain}
+            {"organization_id": organization_id, "domain_id": domain}
         ).fetchone()
         
         if not domain_result:
             raise HTTPException(status_code=400, detail=f"Domain '{domain}' not found or not active")
         
         domain_id = str(domain_result.id)
+        domain_name = domain_result.domain_name
 
         # Check for duplicates within organization
         existing_file = db.execute(
@@ -209,7 +214,7 @@ async def upload_file(
                 id=str(existing_file.id),
                 filename=existing_file.filename,
                 status="duplicate",
-                domain=domain,
+                domain=domain_name,
                 processing_status="completed"
             )
         
@@ -220,44 +225,73 @@ async def upload_file(
         storage_url = None
         object_key = None
         storage_type = "local"
+        file_path = None
         
         if minio_storage:
             try:
-                # Create organization-isolated object key
-                safe_filename = file.filename.replace(" ", "_").replace("/", "_")
-                object_key = f"{org_slug}/{domain}/{file_id}/{safe_filename}"
-                
-                # Upload to MinIO
-                storage_url = await minio_storage.upload_file(
-                    content=content,
-                    object_key=object_key,
+                # Upload to MinIO with correct parameters
+                upload_result = await minio_storage.upload_file(
+                    file_content=content,
+                    organization_slug=org_slug,
+                    domain=domain_name,
+                    file_id=file_id,
+                    filename=file.filename,
                     content_type=detected_content_type,
                     metadata={
                         "organization_id": organization_id,
-                        "domain": domain,
+                        "domain": domain_name,
                         "uploaded_by": current_user["id"],
                         "original_filename": file.filename
                     }
                 )
-                storage_type = "minio"
-                logger.info(f"File uploaded to MinIO: {object_key}")
+                
+                if upload_result.get("success"):
+                    storage_type = "minio"
+                    object_key = upload_result["object_key"]
+                    storage_url = upload_result.get("url")
+                    logger.info(f"File uploaded to MinIO: {object_key}")
+                else:
+                    raise Exception(upload_result.get("error", "Unknown MinIO error"))
                 
             except Exception as e:
                 logger.error(f"MinIO upload failed: {str(e)}")
                 # Fall back to local storage
-                pass
+                storage_type = "local"
+                object_key = None
+                storage_url = None
+        
+        # Local storage fallback implementation
+        if storage_type == "local":
+            try:
+                # Create local file storage directory
+                storage_dir = Path(f"/app/storage/{org_slug}/{domain_name}")
+                storage_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Save file locally
+                safe_filename = file.filename.replace(" ", "_").replace("/", "_")
+                file_path = storage_dir / f"{file_id}_{safe_filename}"
+                
+                with open(file_path, "wb") as f:
+                    f.write(content)
+                
+                storage_url = str(file_path)
+                logger.info(f"File saved locally: {file_path}")
+                
+            except Exception as e:
+                logger.error(f"Local storage also failed: {str(e)}")
+                raise HTTPException(status_code=500, detail="Both MinIO and local storage failed")
         
         # Insert file record into database
         db.execute(
             text("""
                 INSERT INTO files (
                     id, filename, original_filename, content_type, size_bytes, domain_id, organization_id,
-                    uploaded_by, file_hash, storage_type, object_key, storage_url,
+                    uploaded_by, file_hash, storage_type, object_key, storage_url, file_path,
                     created_at, processed, metadata
                 )
                 VALUES (
                     :id, :filename, :original_filename, :content_type, :size_bytes, :domain_id, :organization_id,
-                    :uploaded_by, :file_hash, :storage_type, :object_key, :storage_url,
+                    :uploaded_by, :file_hash, :storage_type, :object_key, :storage_url, :file_path,
                     :created_at, :processed, :metadata
                 )
             """),
@@ -274,6 +308,7 @@ async def upload_file(
                 "storage_type": storage_type,
                 "object_key": object_key,
                 "storage_url": storage_url,
+                "file_path": str(file_path) if file_path else None,
                 "created_at": datetime.utcnow(),
                 "processed": False,
                 "metadata": "{}"
@@ -285,19 +320,19 @@ async def upload_file(
         # Queue for background processing
         if background_job_processor:
             await background_job_processor.queue_file_processing(
-                file_id, content, detected_content_type, domain, organization_id
+                file_id, content, detected_content_type, domain_name, organization_id
             )
         
         # Log the upload
         AuditLogger.log_event(
             db, "file_upload", current_user["id"], "files", "create",
-            f"Uploaded file {file.filename} to domain {domain}",
+            f"Uploaded file {file.filename} to domain {domain_name}",
             {
                 "file_id": file_id,
                 "filename": file.filename,
                 "size_bytes": file_size,
                 "content_type": detected_content_type,
-                "domain": domain,
+                "domain": domain_name,
                 "organization_id": organization_id,
                 "storage_type": storage_type
             }
@@ -307,7 +342,7 @@ async def upload_file(
             id=file_id,
             filename=file.filename,
             status="uploaded",
-            domain=domain,
+            domain=domain_name,
             processing_status="queued"
         )
         
@@ -322,6 +357,64 @@ async def upload_file(
 # ============================================================================
 # FILE MANAGEMENT ENDPOINTS
 # ============================================================================
+
+@router.get("/processing-status")
+async def get_processing_status(
+    domain: Optional[str] = None,
+    current_user: dict = Depends(require_permission("files:read")),
+    db: Session = Depends(get_db)
+):
+    """Get file processing status with organization isolation"""
+    try:
+        # Get user's organization
+        org_result = db.execute(
+            text("""
+                SELECT om.organization_id
+                FROM organization_members om
+                WHERE om.user_id = :user_id AND om.is_active = true
+                LIMIT 1
+            """),
+            {"user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not org_result:
+            raise HTTPException(status_code=403, detail="User not associated with any organization")
+        
+        organization_id = str(org_result.organization_id)
+        
+        # Build query with optional domain filter
+        query = """
+            SELECT 
+                COUNT(*) as total_files,
+                COUNT(CASE WHEN processed = true THEN 1 END) as processed_files,
+                COUNT(CASE WHEN processed = false THEN 1 END) as pending_files,
+                COUNT(CASE WHEN processing_status = 'error' THEN 1 END) as error_files
+            FROM files f
+            LEFT JOIN organization_domains od ON f.domain_id = od.id
+            WHERE f.organization_id = :organization_id
+        """
+        params = {"organization_id": organization_id}
+        
+        if domain:
+            # Filter by domain ID (UUID)
+            query += " AND od.id = :domain"
+            params["domain"] = domain
+        
+        result = db.execute(text(query), params).fetchone()
+        
+        return {
+            "total_files": result.total_files or 0,
+            "processed_files": result.processed_files or 0,
+            "pending_files": result.pending_files or 0,
+            "error_files": result.error_files or 0,
+            "processing_complete": (result.pending_files or 0) == 0
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get processing status: {str(e)}")
+
 
 @router.get("")
 async def list_files(
@@ -451,13 +544,96 @@ async def download_file(
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
 
 
-@router.get("/processing-status")
-async def get_processing_status(
-    domain: Optional[str] = None,
+@router.delete("/{file_id}")
+async def delete_file(
+    file_id: str,
+    current_user: dict = Depends(require_permission("files:delete")),
+    db: Session = Depends(get_db)
+):
+    """Delete file with organization isolation"""
+    try:
+        # Get user's organization
+        org_result = db.execute(
+            text("""
+                SELECT om.organization_id, o.slug
+                FROM organization_members om
+                JOIN organizations o ON om.organization_id = o.id
+                WHERE om.user_id = :user_id AND om.is_active = true
+                LIMIT 1
+            """),
+            {"user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not org_result:
+            raise HTTPException(status_code=403, detail="User not associated with any organization")
+        
+        organization_id = str(org_result.organization_id)
+        org_slug = org_result.slug
+        
+        # Get file info with organization check
+        file_result = db.execute(
+            text("""
+                SELECT f.id, f.filename, f.storage_type, f.object_key, od.domain_name as domain
+                FROM files f
+                LEFT JOIN organization_domains od ON f.domain_id = od.id
+                WHERE f.id = :file_id AND f.organization_id = :organization_id
+            """),
+            {"file_id": file_id, "organization_id": organization_id}
+        ).fetchone()
+        
+        if not file_result:
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Delete file from storage
+        if file_result.storage_type == "minio" and minio_storage and file_result.object_key:
+            storage_deleted = minio_storage.delete_file(file_result.object_key)
+            if not storage_deleted:
+                logger.warning(f"Failed to delete file from storage: {file_result.object_key}")
+        
+        # Delete related embeddings first (due to foreign key constraints)
+        db.execute(
+            text("DELETE FROM embeddings WHERE source_id = :file_id"),
+            {"file_id": file_id}
+        )
+        
+        # Delete file record from database
+        result = db.execute(
+            text("DELETE FROM files WHERE id = :file_id AND organization_id = :organization_id"),
+            {"file_id": file_id, "organization_id": organization_id}
+        )
+        
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        db.commit()
+        
+        # Log the deletion
+        AuditLogger.log_event(
+            db, "file_deleted", current_user["id"], "files", "delete",
+            f"Deleted file {file_result.filename}",
+            {
+                "file_id": file_id,
+                "filename": file_result.filename,
+                "domain": file_result.domain,
+                "organization_id": organization_id
+            }
+        )
+        
+        return {"message": "File deleted successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+
+
+@router.get("/{file_id}")
+async def get_file_info(
+    file_id: str,
     current_user: dict = Depends(require_permission("files:read")),
     db: Session = Depends(get_db)
 ):
-    """Get file processing status with organization isolation"""
+    """Get file information with organization isolation"""
     try:
         # Get user's organization
         org_result = db.execute(
@@ -475,38 +651,160 @@ async def get_processing_status(
         
         organization_id = str(org_result.organization_id)
         
-        # Build query with optional domain filter
-        query = """
-            SELECT 
-                COUNT(*) as total_files,
-                COUNT(CASE WHEN processed = true THEN 1 END) as processed_files,
-                COUNT(CASE WHEN processed = false THEN 1 END) as pending_files,
-                COUNT(CASE WHEN processing_status = 'error' THEN 1 END) as error_files
-            FROM files f
-            LEFT JOIN organization_domains od ON f.domain_id = od.id
-            WHERE f.organization_id = :organization_id
-        """
-        params = {"organization_id": organization_id}
+        # Get file with organization isolation
+        file_result = db.execute(
+            text("""
+                       SELECT f.id, f.filename, f.content_type, f.size_bytes, f.storage_type,
+                              f.created_at, f.processed, f.processing_status, f.metadata,
+                              od.domain_name as domain, u.username as uploaded_by_username
+                       FROM files f
+                       LEFT JOIN users u ON f.uploaded_by = u.id
+                       LEFT JOIN organization_domains od ON f.domain_id = od.id
+                       WHERE f.id = :file_id AND f.organization_id = :organization_id
+                   """),
+            {"file_id": file_id, "organization_id": organization_id}
+        ).fetchone()
         
-        if domain:
-            # Filter by domain ID (UUID)
-            query += " AND od.id = :domain"
-            params["domain"] = domain
-        
-        result = db.execute(text(query), params).fetchone()
+        if not file_result:
+            raise HTTPException(status_code=404, detail="File not found")
         
         return {
-            "total_files": result.total_files or 0,
-            "processed_files": result.processed_files or 0,
-            "pending_files": result.pending_files or 0,
-            "error_files": result.error_files or 0,
-            "processing_complete": (result.pending_files or 0) == 0
+            "id": str(file_result.id),
+            "filename": file_result.filename,
+            "content_type": file_result.content_type,
+            "size_bytes": file_result.size_bytes,
+            "domain": file_result.domain,
+            "uploaded_by": file_result.uploaded_by_username,
+            "created_at": file_result.created_at.isoformat(),
+            "processed": file_result.processed,
+            "processing_status": file_result.processing_status,
+            "metadata": file_result.metadata,
+            "storage_type": file_result.storage_type
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get processing status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get file info: {str(e)}")
+
+
+@sources_router.get("/{source_id}/content")
+async def get_source_content(
+    source_id: str,
+    chunk_index: Optional[int] = None,
+    current_user: dict = Depends(require_permission("files:read")),
+    db: Session = Depends(get_db)
+):
+    """Get source content for citations - retrieve full content of a file/chunk"""
+    try:
+        # Get user's organization
+        org_result = db.execute(
+            text("""
+                SELECT om.organization_id
+                FROM organization_members om
+                WHERE om.user_id = :user_id AND om.is_active = true
+                LIMIT 1
+            """),
+            {"user_id": current_user["id"]}
+        ).fetchone()
+        
+        if not org_result:
+            raise HTTPException(status_code=403, detail="User not associated with any organization")
+        
+        organization_id = str(org_result.organization_id)
+        
+        # Get file info with organization isolation
+        file_result = db.execute(
+            text("""
+                SELECT f.id, f.filename, f.content_type, f.size_bytes, f.organization_id,
+                       f.domain_id, f.storage_type, f.storage_path, f.original_filename
+                FROM files f
+                WHERE f.id = :source_id AND f.organization_id = :organization_id
+            """),
+            {"source_id": source_id, "organization_id": organization_id}
+        ).fetchone()
+        
+        if not file_result:
+            raise HTTPException(status_code=404, detail="Source file not found")
+        
+        # If chunk_index is specified, try to get the specific chunk content
+        if chunk_index is not None:
+            chunk_result = db.execute(
+                text("""
+                    SELECT content_text, chunk_index, metadata
+                    FROM embeddings
+                    WHERE source_id = :source_id 
+                    AND chunk_index = :chunk_index
+                    AND organization_id = :organization_id
+                    ORDER BY chunk_index
+                    LIMIT 1
+                """),
+                {
+                    "source_id": source_id,
+                    "chunk_index": chunk_index,
+                    "organization_id": organization_id
+                }
+            ).fetchone()
+            
+            if chunk_result:
+                return {
+                    "content": chunk_result.content_text,
+                    "chunk_index": chunk_result.chunk_index,
+                    "filename": file_result.original_filename or file_result.filename,
+                    "content_type": file_result.content_type,
+                    "metadata": chunk_result.metadata,
+                    "source_type": "chunk"
+                }
+        
+        # Fallback: Get all chunks for this file and combine them
+        chunks_result = db.execute(
+            text("""
+                SELECT content_text, chunk_index, metadata
+                FROM embeddings
+                WHERE source_id = :source_id
+                AND organization_id = :organization_id
+                ORDER BY chunk_index
+            """),
+            {"source_id": source_id, "organization_id": organization_id}
+        ).fetchall()
+        
+        if chunks_result:
+            # Combine all chunks to reconstruct the full document
+            full_content = "\n\n".join([chunk.content_text for chunk in chunks_result])
+            return {
+                "content": full_content,
+                "chunk_count": len(chunks_result),
+                "filename": file_result.original_filename or file_result.filename,
+                "content_type": file_result.content_type,
+                "source_type": "full_document_reconstructed"
+            }
+        
+        # Final fallback: Try to get content from storage if available
+        if file_result.storage_type == "minio" and minio_storage:
+            try:
+                # Try to get content from MinIO
+                content = minio_storage.get_file_content(file_result.storage_path)
+                if content:
+                    return {
+                        "content": content.decode('utf-8') if isinstance(content, bytes) else content,
+                        "filename": file_result.original_filename or file_result.filename,
+                        "content_type": file_result.content_type,
+                        "source_type": "direct_storage"
+                    }
+            except Exception as e:
+                logger.warning(f"Failed to get content from storage: {e}")
+        
+        # No content found
+        raise HTTPException(
+            status_code=404, 
+            detail="Content not found. File may not have been processed yet or content is not available."
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting source content: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get source content: {str(e)}")
 
 
 # ============================================================================
@@ -670,4 +968,4 @@ async def get_crawl_status(
 
 
 # Export all routers
-__all__ = ["router", "web_router"] 
+__all__ = ["router", "web_router", "sources_router"] 

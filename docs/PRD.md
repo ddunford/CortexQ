@@ -1,4 +1,4 @@
-# 📚 Product Requirements Document (PRD): Enterprise-Ready RAG Searcher with Chatbot & Intelligent Agents
+# 📚 Product Requirements Document (PRD): CortexQ - AI-Powered Knowledge Management Platform
 
 ---
 

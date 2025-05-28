@@ -1,5 +1,23 @@
 'use client';
 
+/**
+ * Domain Creation Wizard - Simplified Flow
+ * 
+ * This wizard creates domains with a streamlined 7-step process:
+ * 1. Template Selection - Choose from predefined domain templates
+ * 2. Basic Configuration - Domain name and description
+ * 3. Document Upload - Optional initial document upload
+ * 4. AI Configuration - LLM settings and prompts
+ * 5. Permissions - Access control settings
+ * 6. Testing - Validate configuration
+ * 7. Launch - Deploy the domain
+ * 
+ * Note: Data sources are intentionally excluded from this wizard to avoid
+ * inconsistency with the comprehensive connector creation flow. Users are
+ * directed to add data sources after domain creation using the full-featured
+ * ConnectorConfigModal in the Domain Workspace.
+ */
+
 import React, { useState, useEffect } from 'react';
 import { 
   ArrowLeft, 
@@ -13,16 +31,14 @@ import {
   Activity,
   Brain,
   Upload,
-  Link,
   Users,
   TestTube,
-  Rocket,
-  Plus
+  Rocket
 } from 'lucide-react';
 import Card, { CardHeader, CardTitle, CardContent } from '../ui/Card';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
-import { DomainTemplate, Domain, DomainCreationState, ConnectorType } from '../../types';
+import { DomainTemplate, Domain, DomainCreationState } from '../../types';
 import { apiClient } from '../../utils/api';
 
 interface DomainCreationWizardProps {
@@ -48,11 +64,6 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
   });
   const [loading, setLoading] = useState(false);
   
-  // Data Sources hooks
-  const [selectedConnectors, setSelectedConnectors] = useState<string[]>([]);
-  const [showWebScraper, setShowWebScraper] = useState(false);
-  const [webUrls, setWebUrls] = useState<string[]>(['']);
-  
   // Document Upload hooks
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -60,7 +71,6 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
   const steps = [
     { id: 'template', title: 'Choose Template', description: 'Select a pre-built domain template', icon: Globe },
     { id: 'basic', title: 'Basic Configuration', description: 'Set up domain name and description', icon: Settings },
-    { id: 'datasources', title: 'Data Sources', description: 'Connect external data sources', icon: Link },
     { id: 'documents', title: 'Upload Documents', description: 'Add initial documents', icon: Upload },
     { id: 'ai', title: 'AI Configuration', description: 'Configure AI settings', icon: Brain },
     { id: 'permissions', title: 'Permissions', description: 'Set up access control', icon: Users },
@@ -176,22 +186,6 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
           }
           
           setUploading(false);
-        }
-
-        // Set up web scraper if configured
-        if (webUrls.length > 0 && webUrls[0]) {
-          try {
-            const scrapingResponse = await apiClient.startWebScraping({
-              urls: webUrls.filter(url => url.trim()),
-              domain: domain.id,
-              max_depth: 2,
-              max_pages: 100,
-              delay: 1.0
-            });
-            // Web scraping started successfully
-          } catch (error) {
-            // Handle web scraping error silently or with proper error reporting
-          }
         }
 
         onComplete(domain);
@@ -358,169 +352,6 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
       </div>
     </div>
   );
-
-  const renderDataSources = () => {
-    const availableConnectors = [
-      { type: 'jira', name: 'Jira', description: 'Import tickets and issues', icon: <Settings className="h-5 w-5" />, needsAuth: true },
-      { type: 'github', name: 'GitHub', description: 'Import repositories and issues', icon: <Settings className="h-5 w-5" />, needsAuth: true },
-      { type: 'confluence', name: 'Confluence', description: 'Import wiki pages', icon: <Settings className="h-5 w-5" />, needsAuth: true },
-      { type: 'hubspot', name: 'HubSpot', description: 'Import CRM data', icon: <TrendingUp className="h-5 w-5" />, needsAuth: true },
-      { type: 'slack', name: 'Slack', description: 'Import conversations', icon: <Settings className="h-5 w-5" />, needsAuth: true },
-      { type: 'google-drive', name: 'Google Drive', description: 'Import documents and folders', icon: <Globe className="h-5 w-5" />, needsAuth: true },
-      { type: 'web-scraper', name: 'Web Scraper', description: 'Crawl and index websites', icon: <Globe className="h-5 w-5" />, needsAuth: false },
-    ];
-
-    const toggleConnector = (connectorType: string) => {
-      if (connectorType === 'web-scraper') {
-        setShowWebScraper(!showWebScraper);
-        return;
-      }
-      
-      setSelectedConnectors(prev => 
-        prev.includes(connectorType) 
-          ? prev.filter(c => c !== connectorType)
-          : [...prev, connectorType]
-      );
-    };
-
-    const addWebUrl = () => {
-      const newUrls = [...webUrls, ''];
-      setWebUrls(newUrls);
-      updateState({ ...state, webUrls: newUrls } as any);
-    };
-
-    const updateWebUrl = (index: number, url: string) => {
-      const newUrls = webUrls.map((u, i) => i === index ? url : u);
-      setWebUrls(newUrls);
-      // Store in global state
-      updateState({ ...state, webUrls: newUrls } as any);
-    };
-
-    const removeWebUrl = (index: number) => {
-      const newUrls = webUrls.filter((_, i) => i !== index);
-      setWebUrls(newUrls);
-      updateState({ ...state, webUrls: newUrls } as any);
-    };
-
-    return (
-      <div className="space-y-6">
-        <div className="text-center">
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Connect Data Sources</h2>
-          <p className="text-gray-600">Choose which external systems to connect to your domain.</p>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {availableConnectors.map((connector) => (
-            <div
-              key={connector.type}
-              className={`border rounded-lg p-4 hover:shadow-md transition-all duration-200 cursor-pointer ${
-                selectedConnectors.includes(connector.type) || (connector.type === 'web-scraper' && showWebScraper)
-                  ? 'border-blue-500 bg-blue-50'
-                  : 'border-gray-200'
-              }`}
-              onClick={() => toggleConnector(connector.type)}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <div className={`p-2 rounded-lg ${
-                    selectedConnectors.includes(connector.type) || (connector.type === 'web-scraper' && showWebScraper)
-                      ? 'bg-blue-100'
-                      : 'bg-gray-100'
-                  }`}>
-                    {connector.icon}
-                  </div>
-                  <div>
-                    <h4 className="font-medium text-gray-900">{connector.name}</h4>
-                    <p className="text-sm text-gray-600">{connector.description}</p>
-                  </div>
-                </div>
-                <div className="flex items-center space-x-2">
-                  {connector.needsAuth && (
-                    <span className="text-xs text-orange-600 bg-orange-100 px-2 py-1 rounded">
-                      Auth Required
-                    </span>
-                  )}
-                  <Button 
-                    variant={selectedConnectors.includes(connector.type) || (connector.type === 'web-scraper' && showWebScraper) ? "primary" : "outline"} 
-                    size="sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleConnector(connector.type);
-                    }}
-                  >
-                    {selectedConnectors.includes(connector.type) || (connector.type === 'web-scraper' && showWebScraper) ? 'Connected' : 'Connect'}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Web Scraper Configuration */}
-        {showWebScraper && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Web Scraper Configuration</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    URLs to Crawl
-                  </label>
-                  {webUrls.map((url, index) => (
-                    <div key={index} className="flex items-center space-x-2 mb-2">
-                      <Input
-                        placeholder="https://example.com"
-                        value={url}
-                        onChange={(e) => updateWebUrl(index, e.target.value)}
-                        fullWidth
-                      />
-                      {webUrls.length > 1 && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => removeWebUrl(index)}
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      )}
-                    </div>
-                  ))}
-                  <Button variant="outline" size="sm" onClick={addWebUrl}>
-                    <Plus className="h-4 w-4 mr-2" />
-                    Add URL
-                  </Button>
-                </div>
-                
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Max Depth
-                    </label>
-                    <Input type="number" defaultValue="2" min="1" max="5" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Max Pages
-                    </label>
-                    <Input type="number" defaultValue="100" min="1" max="1000" />
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        <div className="text-center">
-          <p className="text-sm text-gray-500">
-            Selected: {selectedConnectors.length + (showWebScraper ? 1 : 0)} data source(s). 
-            You can configure authentication and add more sources after creating the domain.
-          </p>
-        </div>
-      </div>
-    );
-  };
 
   const renderDocumentUpload = () => {
     const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -958,6 +789,12 @@ Be helpful, accurate, and maintain a professional tone.`,
                   <p className="font-medium capitalize">{state.securityConfig?.accessControl}</p>
                 </div>
               </div>
+              
+              <div className="p-3 bg-blue-50 rounded-lg">
+                <p className="text-sm text-blue-800">
+                  <strong>Next step:</strong> Connect data sources in the Domain Workspace to start indexing content.
+                </p>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -969,27 +806,33 @@ Be helpful, accurate, and maintain a professional tone.`,
     switch (currentStep) {
       case 0: return renderTemplateSelection();
       case 1: return renderBasicConfiguration();
-      case 2: return renderDataSources();
-      case 3: return renderDocumentUpload();
-      case 4: return renderAIConfiguration();
-      case 5: return renderPermissions();
-      case 6: return renderTesting();
-      case 7: return renderLaunch();
+      case 2: return renderDocumentUpload();
+      case 3: return renderAIConfiguration();
+      case 4: return renderPermissions();
+      case 5: return renderTesting();
+      case 6: return renderLaunch();
       default: return null;
     }
   };
 
   const isStepValid = () => {
     switch (currentStep) {
-      case 0: return !!state.template;
-      case 1: return !!(state.basicConfig.name && state.basicConfig.description);
-      case 2: return true; // Optional step
-      case 3: return true; // Optional step
-      case 4: return true; // Has defaults
-      case 5: return true; // Has defaults
-      case 6: return true; // Validation step
-      case 7: return true; // Launch step
-      default: return false;
+      case 0: // Template selection
+        return !!state.template;
+      case 1: // Basic configuration
+        return !!(state.basicConfig.name && state.basicConfig.description);
+      case 2: // Document upload (optional)
+        return true;
+      case 3: // AI configuration
+        return !!(state.aiConfig?.provider && state.aiConfig?.model);
+      case 4: // Permissions
+        return !!state.securityConfig?.accessControl;
+      case 5: // Testing (optional)
+        return true;
+      case 6: // Launch
+        return true;
+      default:
+        return false;
     }
   };
 

@@ -1,5 +1,5 @@
 """
-Dependencies package for Enterprise RAG API
+Dependencies package for CortexQ API
 Exports all dependency functions for easy importing
 """
 

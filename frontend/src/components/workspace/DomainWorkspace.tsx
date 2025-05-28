@@ -20,7 +20,11 @@ import {
   Eye,
   Edit,
   Trash2,
-  Send
+  Send,
+  ArrowLeft,
+  Bug,
+  Code,
+  X
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card';
 import Button from '../ui/Button';
@@ -29,6 +33,7 @@ import CitationText from '../ui/CitationText';
 import { Domain, Document, SearchResult, AnalyticsMetrics, ConnectorConfig } from '../../types';
 import { apiClient } from '../../utils/api';
 import { ConnectorConfigModal } from '../connectors/ConnectorConfigModal';
+import { WebScraperManager } from '../connectors/WebScraperManager';
 
 interface DomainWorkspaceProps {
   domain: Domain;
@@ -67,6 +72,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   
   // Connector modal state
   const [showConnectorModal, setShowConnectorModal] = useState(false);
+  const [selectedConnector, setSelectedConnector] = useState<ConnectorConfig | null>(null);
   
   // File upload state
   const [uploading, setUploading] = useState(false);
@@ -75,6 +81,10 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   // Reindexing state
   const [reindexing, setReindexing] = useState(false);
   const [processingStatus, setProcessingStatus] = useState<any>(null);
+
+  // File view modal state
+  const [viewModalOpen, setViewModalOpen] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<Document | null>(null);
 
   // Chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -318,6 +328,61 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     }
   };
 
+  // File action handlers
+  const handleViewFile = async (file: Document) => {
+    try {
+      const response = await apiClient.getFile(file.id);
+      if (response.success) {
+        setSelectedFile(response.data);
+        setViewModalOpen(true);
+      }
+    } catch (error) {
+      console.error('Failed to view file:', error);
+      alert('Failed to view file details');
+    }
+  };
+
+  const handleDownloadFile = async (file: Document) => {
+    try {
+      const response = await apiClient.downloadFile(file.id);
+      if (response.success && response.data) {
+        // Open the download URL in a new tab/window
+        const link = document.createElement('a');
+        link.href = response.data.download_url;
+        link.download = response.data.filename;
+        link.target = '_blank';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } else {
+        alert('Failed to generate download link');
+      }
+    } catch (error) {
+      console.error('Failed to download file:', error);
+      alert('Failed to download file. Please try again.');
+    }
+  };
+
+  const handleDeleteFile = async (file: Document) => {
+    if (!confirm(`Are you sure you want to delete "${file.filename}"? This action cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      const response = await apiClient.deleteFile(file.id);
+      if (response.success) {
+        // Remove the file from the local state
+        setDocuments(docs => docs.filter(d => d.id !== file.id));
+        alert('File deleted successfully');
+      } else {
+        alert('Failed to delete file');
+      }
+    } catch (error) {
+      console.error('Failed to delete file:', error);
+      alert('Failed to delete file');
+    }
+  };
+
   // Chat functions
   const handleSendMessage = async () => {
     if (!chatInput.trim() || chatLoading) return;
@@ -344,7 +409,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
         const assistantMessage: ChatMessage = {
           id: (Date.now() + 1).toString(),
           type: 'assistant',
-          content: response.data.text || 'I received your message but couldn\'t generate a response.',
+          content: response.data.response || 'I received your message but couldn\'t generate a response.',
           timestamp: new Date(),
           sources: response.data.sources || [],
           confidence: response.data.confidence || 0,
@@ -391,6 +456,45 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   const handleConnectorCreated = (connector: ConnectorConfig) => {
     setConnectors(prev => [...prev, connector]);
     setShowConnectorModal(false);
+  };
+
+  const handleConnectorUpdated = (updatedConnector: ConnectorConfig) => {
+    setConnectors(prev => prev.map(c => c.id === updatedConnector.id ? updatedConnector : c));
+  };
+
+  const handleConnectorSelect = (connector: ConnectorConfig) => {
+    setSelectedConnector(connector);
+  };
+
+  const handleBackToConnectors = () => {
+    setSelectedConnector(null);
+  };
+
+  const handleConnectorDelete = async (connectorId: string, connectorName: string) => {
+    if (!confirm(`Are you sure you want to delete "${connectorName}"? This action cannot be undone and will remove all associated data.`)) {
+      return;
+    }
+
+    try {
+      const response = await apiClient.deleteConnector(domain.id, connectorId);
+      
+      if (response.success) {
+        // Remove connector from state
+        setConnectors(prev => prev.filter(c => c.id !== connectorId));
+        
+        // If this connector is currently selected, go back to list
+        if (selectedConnector?.id === connectorId) {
+          setSelectedConnector(null);
+        }
+        
+        alert('Data source deleted successfully');
+      } else {
+        alert(`Failed to delete data source: ${response.message || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Failed to delete connector:', error);
+      alert('Failed to delete data source. Please try again.');
+    }
   };
 
   const renderKnowledgeBase = () => (
@@ -571,9 +675,9 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
                     <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(doc.status)}`}>
                       {doc.status}
                     </span>
-                    <Button variant="ghost" size="sm" icon={<Eye className="h-4 w-4" />}>View</Button>
-                    <Button variant="ghost" size="sm" icon={<Download className="h-4 w-4" />}>Download</Button>
-                    <Button variant="ghost" size="sm" icon={<Trash2 className="h-4 w-4" />}>Delete</Button>
+                    <Button variant="ghost" size="sm" icon={<Eye className="h-4 w-4" />} onClick={() => handleViewFile(doc)}>View</Button>
+                    <Button variant="ghost" size="sm" icon={<Download className="h-4 w-4" />} onClick={() => handleDownloadFile(doc)}>Download</Button>
+                    <Button variant="ghost" size="sm" icon={<Trash2 className="h-4 w-4" />} onClick={() => handleDeleteFile(doc)}>Delete</Button>
                   </div>
                 </div>
               ))}
@@ -830,74 +934,154 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     </div>
   );
 
-  const renderDataSources = () => (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-lg font-semibold text-gray-900">Data Sources</h3>
-          <p className="text-gray-600">External integrations and connectors</p>
-        </div>
-        <Button 
-          icon={<Link className="h-4 w-4" />}
-          onClick={() => setShowConnectorModal(true)}
-        >
-          Add Integration
-        </Button>
-      </div>
-
-      {loading && (
-        <Card>
-          <CardContent className="text-center py-8">
-            <div className="animate-spin h-8 w-8 border-2 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
-            <p className="text-gray-600">Loading integrations...</p>
-          </CardContent>
-        </Card>
-      )}
-
-      {!loading && (!connectors || connectors.length === 0) ? (
-        <Card>
-          <CardContent className="text-center py-8">
-            <Link className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">No integrations yet</h3>
-            <p className="text-gray-500 mb-4">Connect external data sources to enrich your domain.</p>
+  const renderDataSources = () => {
+    // If a connector is selected, show its detailed view
+    if (selectedConnector) {
+      return (
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              <Button 
+                variant="ghost" 
+                onClick={handleBackToConnectors}
+                className="flex items-center space-x-2"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                <span>Back to Connectors</span>
+              </Button>
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">{selectedConnector.name}</h3>
+                <p className="text-gray-600 capitalize">{selectedConnector.type} Configuration</p>
+              </div>
+            </div>
             <Button 
-              icon={<Link className="h-4 w-4" />}
-              onClick={() => setShowConnectorModal(true)}
+              variant="danger" 
+              size="sm"
+              onClick={() => handleConnectorDelete(selectedConnector.id, selectedConnector.name)}
+              icon={<Trash2 className="h-4 w-4" />}
             >
-              Add Your First Integration
+              Delete Connector
             </Button>
-          </CardContent>
-        </Card>
-      ) : !loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {(connectors || []).map((connector) => (
-            <Card key={connector.id} hover>
-              <CardContent>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center space-x-3">
-                    <div className="p-2 bg-gray-100 rounded-lg">
-                      <Link className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <h4 className="font-medium text-gray-900">{connector.name}</h4>
-                      <p className="text-sm text-gray-600 capitalize">{connector.type}</p>
-                    </div>
-                  </div>
-                  <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(connector.status)}`}>
-                    {connector.status}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-sm text-gray-500">
-                  <span>Last sync: {connector.lastSync ? new Date(connector.lastSync).toLocaleDateString() : 'Never'}</span>
-                  <Button variant="ghost" size="sm">Configure</Button>
-                </div>
+          </div>
+
+          {/* Render specific connector manager based on type */}
+          {selectedConnector.type === 'web_scraper' ? (
+            <WebScraperManager
+              connector={selectedConnector}
+              domainId={domain.id}
+              onConnectorUpdated={handleConnectorUpdated}
+            />
+          ) : (
+            <Card>
+              <CardContent className="text-center py-8">
+                <Settings className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">Configuration Not Available</h3>
+                <p className="text-gray-500">Advanced configuration for {selectedConnector.type} connectors is coming soon.</p>
               </CardContent>
             </Card>
-          ))}
+          )}
         </div>
-      ) : null}
-    </div>
-  );
+      );
+    }
+
+    // Default connector list view
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Data Sources</h3>
+            <p className="text-gray-600">External integrations and connectors</p>
+          </div>
+          <Button 
+            icon={<Link className="h-4 w-4" />}
+            onClick={() => setShowConnectorModal(true)}
+          >
+            Add Integration
+          </Button>
+        </div>
+
+        {loading && (
+          <Card>
+            <CardContent className="text-center py-8">
+              <div className="animate-spin h-8 w-8 border-2 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+              <p className="text-gray-600">Loading integrations...</p>
+            </CardContent>
+          </Card>
+        )}
+
+        {!loading && (!connectors || connectors.length === 0) ? (
+          <Card>
+            <CardContent className="text-center py-8">
+              <Link className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-900 mb-2">No integrations yet</h3>
+              <p className="text-gray-500 mb-4">Connect external data sources to enrich your domain.</p>
+              <Button 
+                icon={<Link className="h-4 w-4" />}
+                onClick={() => setShowConnectorModal(true)}
+              >
+                Add Your First Integration
+              </Button>
+            </CardContent>
+          </Card>
+        ) : !loading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {(connectors || []).map((connector) => (
+              <Card key={connector.id} hover>
+                <CardContent>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center space-x-3">
+                      <div className="p-2 bg-gray-100 rounded-lg">
+                        {connector.type === 'web_scraper' ? (
+                          <Globe className="h-5 w-5" />
+                        ) : connector.type === 'jira' ? (
+                          <Bug className="h-5 w-5" />
+                        ) : connector.type === 'github' ? (
+                          <Code className="h-5 w-5" />
+                        ) : (
+                          <Link className="h-5 w-5" />
+                        )}
+                      </div>
+                      <div>
+                        <h4 className="font-medium text-gray-900">{connector.name}</h4>
+                        <p className="text-sm text-gray-600 capitalize">{connector.type ? connector.type.replace('_', ' ') : 'Unknown'}</p>
+                      </div>
+                    </div>
+                    <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(connector.status)}`}>
+                      {connector.status}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm text-gray-500">
+                    <span>Last sync: {connector.lastSync ? new Date(connector.lastSync).toLocaleDateString() : 'Never'}</span>
+                    <div className="flex items-center space-x-2">
+                      <Button 
+                        variant="ghost" 
+                        size="sm"
+                        onClick={() => handleConnectorSelect(connector)}
+                      >
+                        Configure
+                      </Button>
+                      <Button 
+                        variant="ghost" 
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleConnectorDelete(connector.id, connector.name);
+                        }}
+                        className="text-red-600 hover:text-red-800 hover:bg-red-50"
+                        icon={<Trash2 className="h-4 w-4" />}
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
 
   const renderAnalytics = () => (
     <div className="space-y-6">
@@ -1105,12 +1289,109 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
       </div>
 
       {/* Connector Configuration Modal */}
-      <ConnectorConfigModal
-        isOpen={showConnectorModal}
-        onClose={() => setShowConnectorModal(false)}
-        domainId={domain.id}
-        onConnectorCreated={handleConnectorCreated}
-      />
+      {showConnectorModal && (
+        <ConnectorConfigModal
+          isOpen={showConnectorModal}
+          onClose={() => {
+            setShowConnectorModal(false);
+            setSelectedConnector(null);
+          }}
+          connector={selectedConnector}
+          domainId={domain.id}
+          onConnectorCreated={handleConnectorCreated}
+          onConnectorUpdated={handleConnectorUpdated}
+        />
+      )}
+
+      {/* File View Modal */}
+      {viewModalOpen && selectedFile && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden">
+            <div className="flex items-center justify-between p-4 border-b border-gray-200">
+              <h3 className="text-lg font-semibold text-gray-900">File Details</h3>
+              <button
+                onClick={() => {
+                  setViewModalOpen(false);
+                  setSelectedFile(null);
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-6 w-6" />
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto max-h-[calc(80vh-120px)]">
+              <div className="space-y-4">
+                <div className="flex items-center space-x-3">
+                  <FileText className="h-12 w-12 text-gray-400" />
+                  <div>
+                    <h4 className="text-xl font-medium text-gray-900">{selectedFile.filename}</h4>
+                    <p className="text-gray-500">{selectedFile.content_type}</p>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">File Size</label>
+                    <p className="text-sm text-gray-900">{((selectedFile.size || 0) / 1024).toFixed(1)} KB</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Status</label>
+                    <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(selectedFile.status)}`}>
+                      {selectedFile.status}
+                    </span>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Upload Date</label>
+                    <p className="text-sm text-gray-900">{new Date(selectedFile.createdAt).toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Uploaded By</label>
+                    <p className="text-sm text-gray-900">{selectedFile.uploaded_by || 'Unknown'}</p>
+                  </div>
+                </div>
+
+                {selectedFile.metadata && Object.keys(selectedFile.metadata).length > 0 && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Metadata</label>
+                    <pre className="text-xs bg-gray-50 p-3 rounded-lg overflow-x-auto">
+                      {JSON.stringify(selectedFile.metadata, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center justify-end space-x-3 p-4 border-t border-gray-200 bg-gray-50">
+              <Button 
+                variant="outline" 
+                icon={<Download className="h-4 w-4" />}
+                onClick={() => handleDownloadFile(selectedFile)}
+              >
+                Download
+              </Button>
+              <Button 
+                variant="danger" 
+                icon={<Trash2 className="h-4 w-4" />}
+                onClick={() => {
+                  setViewModalOpen(false);
+                  setSelectedFile(null);
+                  handleDeleteFile(selectedFile);
+                }}
+              >
+                Delete
+              </Button>
+              <Button 
+                variant="outline"
+                onClick={() => {
+                  setViewModalOpen(false);
+                  setSelectedFile(null);
+                }}
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

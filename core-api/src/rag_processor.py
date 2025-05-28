@@ -145,38 +145,50 @@ class MultiDomainVectorStore:
         domain_data["doc_ids"].extend(doc_ids)
         domain_data["last_updated"] = datetime.utcnow()
     
-    def search(self, query: str, domain: str, top_k: int = 5, min_similarity: float = 0.3, organization_id: Optional[str] = None) -> List[SearchResult]:
-        """Database-based search with similarity calculation"""
+    async def search(self, query: str, domain: str, top_k: int = 5, min_similarity: float = 0.3, organization_id: Optional[str] = None) -> List[SearchResult]:
+        """Search embeddings in database with organization isolation"""
         from database import SessionLocal
         
         # Generate query embedding using the same service as file processing
         if self.embeddings_service and self.embeddings_service.is_available():
-            query_embedding = np.array(self.embeddings_service.encode(query), dtype=np.float32)
+            query_embedding = np.array(await self.embeddings_service.encode_async(query), dtype=np.float32)
         else:
             query_embedding = self.embeddings_model.encode([query])[0]
         
         db = SessionLocal()
         try:
-            # Query embeddings from database with organization context
-            # Include both file embeddings and chat message embeddings
-            query_params = {"domain": domain}
-            org_filter = ""
+            # Get domain_id from domain name
+            domain_result = db.execute(
+                text("SELECT id FROM organization_domains WHERE domain_name = :domain AND organization_id = :org_id"),
+                {"domain": domain, "org_id": organization_id}
+            ).fetchone()
             
-            if organization_id:
-                org_filter = "AND e.organization_id = :organization_id"
-                query_params["organization_id"] = organization_id
+            if not domain_result:
+                print(f"Domain '{domain}' not found for organization {organization_id}")
+                return []
             
+            domain_id = domain_result.id
+            
+            # Build query parameters
+            query_params = {
+                "domain_id": domain_id,
+                "organization_id": organization_id
+            }
+            
+            # Query embeddings from database with organization isolation
             result = db.execute(
-                text(f"""
+                text("""
                     SELECT e.id, e.content_text, e.embedding, e.source_id, e.chunk_index,
-                           COALESCE(f.original_filename, 'Chat Conversation') as original_filename,
-                           COALESCE(f.content_type, e.content_type) as content_type,
-                           e.domain, e.organization_id
+                           f.original_filename as original_filename,
+                           f.content_type as content_type,
+                           od.domain_name, e.organization_id
                     FROM embeddings e
-                    LEFT JOIN files f ON e.source_id = f.id
-                    WHERE e.domain = :domain
-                    {org_filter}
-                    AND (f.processed = true OR f.id IS NULL)
+                    INNER JOIN files f ON e.source_id = f.id
+                    LEFT JOIN organization_domains od ON e.domain_id = od.id
+                    WHERE e.domain_id = :domain_id
+                    AND e.organization_id = :organization_id
+                    AND f.processed = true
+                    AND e.source_id IS NOT NULL
                     ORDER BY e.created_at DESC
                     LIMIT 200
                 """),
@@ -215,8 +227,8 @@ class MultiDomainVectorStore:
                                 "organization_id": str(row.organization_id)
                             },
                             similarity=float(similarity),
-                            domain=row.domain,
-                            source_id=str(row.source_id)
+                            domain=row.domain_name,  # Use domain_name from join
+                            source_id=str(row.source_id) if row.source_id else ""
                         ))
                 except Exception as e:
                     print(f"Error calculating similarity for embedding {row.id}: {e}")
@@ -232,13 +244,13 @@ class MultiDomainVectorStore:
         finally:
             db.close()
     
-    def cross_domain_search(self, query: str, domains: List[str], top_k: int = 10, min_similarity: float = 0.3, organization_id: Optional[str] = None) -> Dict[str, List[SearchResult]]:
+    async def cross_domain_search(self, query: str, domains: List[str], top_k: int = 10, min_similarity: float = 0.3, organization_id: Optional[str] = None) -> Dict[str, List[SearchResult]]:
         """Search across multiple domains with ranking"""
         all_results = {}
         
         for domain in domains:
             # Always search in database, not just domain_indices
-            results = self.search(query, domain, top_k, min_similarity, organization_id)
+            results = await self.search(query, domain, top_k, min_similarity, organization_id)
             if results:
                 all_results[domain] = results
         
@@ -656,7 +668,8 @@ class EnhancedRAGProcessor:
             return False
         
         # Don't enhance if confidence is already very high
-        if cached_response.confidence >= 0.9:
+        cached_confidence = cached_response.confidence or 0.0  # Handle None confidence
+        if cached_confidence >= 0.9:
             return False
         
         # Don't enhance error responses or no-results responses
@@ -695,11 +708,12 @@ class EnhancedRAGProcessor:
             final_sources = unique_sources[:5]
             
             # Update response with new sources
+            cached_confidence = cached_response.confidence or 0.0  # Handle None confidence
             enhanced_response = RAGResponse(
                 query=cached_response.query,
                 response=cached_response.response,  # Keep original response for now
                 intent=cached_response.intent,
-                confidence=min(cached_response.confidence + 0.05, 0.95),  # Slight confidence boost
+                confidence=min(cached_confidence + 0.05, 0.95),  # Slight confidence boost
                 sources=final_sources,
                 domain=cached_response.domain,
                 mode_used=cached_response.mode_used,
@@ -917,14 +931,15 @@ class EnhancedRAGProcessor:
             
             # Step 3: Agent workflow processing (if applicable)
             agent_result = None
+            confidence = classification_result.confidence or 0.0  # Handle None confidence
             if (request.mode == RAGMode.AGENT_ENHANCED and 
-                classification_result.confidence > 0.7 and 
+                confidence > 0.7 and 
                 classification_result.intent in ["bug_report", "feature_request", "training"]):
                 
                 agent_result = await self.agent_processor.execute_workflow(
                     intent=classification_result.intent,
                     query=request.query,
-                    confidence=classification_result.confidence,
+                    confidence=confidence,
                     context=request.context,
                     vector_results=search_results,
                     db=db
@@ -976,13 +991,15 @@ class EnhancedRAGProcessor:
             
         except Exception as e:
             print(f"Error in RAG processing: {e}")
+            import traceback
+            print(f"Full traceback: {traceback.format_exc()}")
             return self._generate_error_response(request, str(e), execution_id, int((time.time() - start_time) * 1000))
     
     async def _perform_search(self, request: RAGRequest, classification: ClassificationResult) -> List[SearchResult]:
         """Perform search based on mode"""
         
         if request.mode == RAGMode.SIMPLE:
-            return self.vector_store.search(
+            return await self.vector_store.search(
                 request.query, 
                 request.domain, 
                 request.max_results, 
@@ -993,7 +1010,7 @@ class EnhancedRAGProcessor:
         elif request.mode == RAGMode.CROSS_DOMAIN:
             # Search across all domains
             all_domains = ["general", "support", "sales", "engineering", "product"]
-            cross_results = self.vector_store.cross_domain_search(
+            cross_results = await self.vector_store.cross_domain_search(
                 request.query, 
                 all_domains, 
                 request.max_results * 2, 
@@ -1012,7 +1029,7 @@ class EnhancedRAGProcessor:
         elif request.mode in [RAGMode.AGENT_ENHANCED, RAGMode.HYBRID]:
             # Use cross-domain search as base for agent processing
             all_domains = ["general", request.domain]  # Focus on relevant domains
-            cross_results = self.vector_store.cross_domain_search(
+            cross_results = await self.vector_store.cross_domain_search(
                 request.query, 
                 all_domains, 
                 request.max_results, 
@@ -1028,7 +1045,7 @@ class EnhancedRAGProcessor:
         
         else:
             # Default to simple search
-            return self.vector_store.search(
+            return await self.vector_store.search(
                 request.query, 
                 request.domain, 
                 request.max_results, 
@@ -1086,7 +1103,8 @@ class EnhancedRAGProcessor:
                 print(f"LLM response generated: {llm_response[:100]}...")
                 
                 # Boost confidence when using LLM
-                confidence = min(classification.confidence + 0.2, 0.95)
+                base_confidence = classification.confidence or 0.0  # Handle None confidence
+                confidence = min(base_confidence + 0.2, 0.95)
                 
                 return {
                     "response": llm_response,
@@ -1140,52 +1158,94 @@ class EnhancedRAGProcessor:
         }
     
     def _format_sources(self, results: List[SearchResult]) -> List[Dict]:
-        """Format search results as sources with deduplication and expandable content"""
+        """Format search results as source citations"""
         sources = []
-        seen_sources = set()
         
+        # Group results by source to handle chunks intelligently
+        source_groups = {}
         for result in results:
-            # Create unique identifier for deduplication
-            source_key = f"{result.source_id}_{result.metadata.get('chunk_index', 0)}"
+            source_id = result.source_id
+            if source_id not in source_groups:
+                source_groups[source_id] = []
+            source_groups[source_id].append(result)
+        
+        citation_counter = 1
+        for source_id, source_results in source_groups.items():
+            # Sort by chunk index if available
+            source_results.sort(key=lambda x: x.metadata.get('chunk_index', 0) or 0)
             
-            if source_key not in seen_sources:
-                seen_sources.add(source_key)
-                
-                # Get better title from filename
-                title = result.metadata.get("title", "Document")
-                if title.endswith('.pdf'):
-                    title = title[:-4]  # Remove .pdf extension
-                
-                # Add chunk info if multiple chunks from same file
-                chunk_index = result.metadata.get("chunk_index", 0)
-                if chunk_index > 0:
-                    title = f"{title} (Part {chunk_index + 1})"
-                
-                # Clean up the content for better readability
-                clean_content = result.content.replace('\n', ' ').strip()
-                
-                # Create a concise preview for the citation
-                preview_content = clean_content[:150] + "..." if len(clean_content) > 150 else clean_content
-                
-                # Create a longer excerpt for modal/expansion
-                excerpt_content = clean_content[:500] + "..." if len(clean_content) > 500 else clean_content
-                
-                sources.append({
-                    "id": result.source_id,
-                    "title": title,
-                    "preview": preview_content,  # Short preview for inline display
-                    "excerpt": excerpt_content,  # Medium excerpt for modal
-                    "full_content": result.content,  # Complete content for detailed view
-                    "domain": result.domain,
-                    "similarity": round(result.similarity, 3),
-                    "confidence_score": f"{round(result.similarity * 100)}%",
-                    "url": result.metadata.get("url"),
-                    "chunk_index": chunk_index,
-                    "content_length": len(result.content),
-                    "word_count": len(result.content.split()),
-                    "expandable": True,  # Flag to indicate this source can be expanded
-                    "citation_id": f"cite_{len(sources) + 1}"  # Unique citation identifier
-                })
+            # Get the best result for this source
+            best_result = max(source_results, key=lambda x: x.similarity)
+            
+            # Improved title formatting
+            title = best_result.metadata.get("title", "Document")
+            
+            # Clean up title for better user experience
+            if title.endswith('.pdf'):
+                title = title[:-4]  # Remove .pdf extension
+            
+            # Extract clean document name without technical suffixes
+            clean_title = title
+            
+            # For help articles and documentation, provide more descriptive titles
+            if 'report' in title.lower():
+                clean_title = title.replace('-', ' ').title()
+            elif 'help' in title.lower() or 'guide' in title.lower():
+                clean_title = f"Help Guide: {title}"
+            elif 'faq' in title.lower():
+                clean_title = f"FAQ: {title}"
+            
+            # Only add chunk info for long documents with multiple meaningful sections
+            chunk_index = best_result.metadata.get("chunk_index", 0) or 0
+            total_chunks = len(source_results)
+            
+            # For documents with many chunks, add section info instead of part numbers
+            if total_chunks > 3 and chunk_index > 0:
+                # Try to make it more user-friendly
+                if 'report' in title.lower():
+                    clean_title = f"{clean_title} - Section {chunk_index + 1}"
+                else:
+                    clean_title = f"{clean_title} (Section {chunk_index + 1})"
+            
+            # Clean up the content for better readability
+            clean_content = best_result.content.replace('\n', ' ').strip()
+            
+            # Create a concise preview for the citation tooltip
+            preview_content = clean_content[:120] + "..." if len(clean_content) > 120 else clean_content
+            
+            # Create a longer excerpt for modal display
+            excerpt_content = clean_content[:400] + "..." if len(clean_content) > 400 else clean_content
+            
+            # Determine document type for better categorization
+            doc_type = "document"
+            if 'help' in title.lower() or 'guide' in title.lower():
+                doc_type = "help_article"
+            elif 'faq' in title.lower():
+                doc_type = "faq"
+            elif 'report' in title.lower():
+                doc_type = "report"
+            elif best_result.metadata.get("content_type", "").startswith("text/"):
+                doc_type = "text_document"
+            
+            sources.append({
+                "id": best_result.source_id,
+                "title": clean_title,
+                "preview": preview_content,  # Short preview for tooltips
+                "excerpt": excerpt_content,  # Medium excerpt for modal preview
+                "full_content": best_result.content,  # Complete content for detailed view
+                "domain": best_result.domain,
+                "similarity": round(best_result.similarity, 3),
+                "confidence_score": f"{round(best_result.similarity * 100)}%",
+                "url": best_result.metadata.get("url"),
+                "chunk_index": chunk_index,
+                "content_length": len(best_result.content),
+                "word_count": len(best_result.content.split()),
+                "document_type": doc_type,  # Add document type classification
+                "expandable": True,  # Flag to indicate this source can be expanded
+                "citation_id": f"cite_{citation_counter}",  # Unique citation identifier
+                "source_quality": "high" if best_result.similarity > 0.7 else "medium" if best_result.similarity > 0.5 else "low"
+            })
+            citation_counter += 1
         
         return sources
     
@@ -1205,7 +1265,7 @@ class EnhancedRAGProcessor:
         context_parts = []
         for source_id, source_results in source_groups.items():
             # Sort by chunk index if available
-            source_results.sort(key=lambda x: x.metadata.get('chunk_index', 0))
+            source_results.sort(key=lambda x: x.metadata.get('chunk_index', 0) or 0)
             
             # Get the most relevant content from this source
             best_result = max(source_results, key=lambda x: x.similarity)
@@ -1315,14 +1375,26 @@ class EnhancedRAGProcessor:
     ):
         """Store execution in database"""
         try:
+            # Get domain_id from domain name
+            domain_result = db.execute(
+                text("SELECT id FROM organization_domains WHERE domain_name = :domain AND organization_id = :org_id"),
+                {"domain": request.domain, "org_id": request.organization_id}
+            ).fetchone()
+            
+            if not domain_result:
+                print(f"Domain '{request.domain}' not found for organization {request.organization_id}")
+                return
+            
+            domain_id = domain_result.id
+            
             db.execute(
                 text("""
                     INSERT INTO rag_executions (
-                        id, query, domain, mode, intent, confidence, 
+                        id, query, domain_id, mode, intent, confidence, 
                         response_type, source_count, processing_time_ms, 
                         user_id, session_id, organization_id, created_at
                     ) VALUES (
-                        :id, :query, :domain, :mode, :intent, :confidence,
+                        :id, :query, :domain_id, :mode, :intent, :confidence,
                         :response_type, :source_count, :processing_time_ms,
                         :user_id, :session_id, :organization_id, :created_at
                     )
@@ -1330,7 +1402,7 @@ class EnhancedRAGProcessor:
                 {
                     "id": response.execution_id,
                     "query": request.query,
-                    "domain": request.domain,
+                    "domain_id": domain_id,
                     "mode": request.mode.value,
                     "intent": classification.intent,
                     "confidence": classification.confidence,

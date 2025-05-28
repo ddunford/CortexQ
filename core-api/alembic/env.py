@@ -28,7 +28,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Set the database URL from environment variable
-database_url = os.getenv("DATABASE_URL", "postgresql://admin:password@postgres:5432/rag_searcher")
+database_url = os.getenv("DATABASE_URL", "postgresql://admin:password@postgres:5432/cortexq")
 config.set_main_option("sqlalchemy.url", database_url)
 
 # other values from the config, defined by the needs of env.py,

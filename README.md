@@ -1,8 +1,8 @@
-# 🚀 Enterprise RAG Searcher
+# 🚀 CortexQ - Ask Smarter. Know Faster.
 
 **A Professional, Enterprise-Ready Retrieval-Augmented Generation System with Modern UI**
 
-![Enterprise RAG](https://img.shields.io/badge/Enterprise-RAG-blue?style=for-the-badge)
+![CortexQ](https://img.shields.io/badge/CortexQ-AI%20Knowledge-blue?style=for-the-badge)
 ![Docker](https://img.shields.io/badge/Docker-Ready-blue?style=for-the-badge&logo=docker)
 ![Next.js](https://img.shields.io/badge/Next.js-Frontend-black?style=for-the-badge&logo=next.js)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-green?style=for-the-badge&logo=fastapi)
@@ -33,36 +33,75 @@
 
 ---
 
-## 🚀 **Quick Start (Docker)**
+## 🚀 Quick Start
 
-### **1. Clone and Setup**
+### Automated Setup (Recommended)
+The easiest way to get everything running with AI models:
+
 ```bash
+# Clone and setup
 git clone <repository-url>
 cd rag_chat
+
+# Complete setup with AI models
 make setup
+make up-full
+
+# This will:
+# 1. Start all services (database, API, frontend, Ollama)
+# 2. Automatically initialize Ollama with lightweight AI models
+# 3. Set up the complete RAG system ready for chat
 ```
 
-### **2. Start Everything**
+🎉 **That's it!** The system will be ready at:
+- **Frontend**: http://localhost:3000
+- **API**: http://localhost:8001
+- **Chat ready** with AI models automatically loaded
+
+### Manual Setup
+If you prefer step-by-step control:
+
 ```bash
-make quick-start
+# 1. Setup environment
+make setup
+
+# 2. Start services
+make up
+
+# 3. Initialize AI models (optional)
+make init-ollama
+
+# 4. Check everything is working
+make health
 ```
 
-This will:
-- Build all Docker images
-- Start all services (PostgreSQL, Redis, Ollama, API, Frontend, Bot Service)
-- Initialize Ollama models
-- Set up networking and health checks
+## 🤖 AI Model Management
 
-### **3. Access the System**
-- **🎨 Professional Frontend**: http://localhost:3000
-- **🔧 API Documentation**: http://localhost:8001/docs
-- **🤖 Bot Service**: http://localhost:8012
-- **⚡ Load Balancer**: http://localhost:80
+### Automatic Model Detection
+The system automatically:
+- ✅ **Detects available Ollama models** on startup
+- ✅ **Downloads lightweight models** if none exist
+- ✅ **Selects the best available model** from preferences
+- ✅ **Falls back gracefully** if models fail to load
 
-### **4. Login**
-Use the demo credentials:
-- **Email**: `admin@example.com`
-- **Password**: `password123`
+### Manual Model Management
+```bash
+# List available models
+make ollama-models
+
+# Pull specific models
+make ollama-pull MODEL=llama3.2:1b    # Lightweight (1GB)
+make ollama-pull MODEL=llama3.1:8b    # More capable (4.7GB)
+
+# Check model status
+curl http://localhost:11434/api/tags
+```
+
+### Supported Models (in order of preference)
+1. **`llama3.2:1b`** - Lightweight, fast responses (recommended)
+2. **`llama3.1:8b`** - More capable but requires more RAM
+3. **`llama2:7b`** - Fallback option
+4. **`codellama:7b`** - Code-focused responses
 
 ---
 

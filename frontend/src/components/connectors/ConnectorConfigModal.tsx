@@ -35,7 +35,7 @@ interface ConnectorTemplate {
   fields: Array<{
     key: string;
     label: string;
-    type: 'text' | 'password' | 'url' | 'select';
+    type: 'text' | 'password' | 'url' | 'select' | 'textarea' | 'checkbox';
     required: boolean;
     placeholder?: string;
     options?: string[];
@@ -118,7 +118,11 @@ const CONNECTOR_TEMPLATES: ConnectorTemplate[] = [
       { key: 'start_urls', label: 'Start URLs', type: 'text', required: true, placeholder: 'https://example.com,https://docs.example.com' },
       { key: 'max_depth', label: 'Max Crawl Depth', type: 'select', required: true, options: ['1', '2', '3', '4', '5'] },
       { key: 'max_pages', label: 'Max Pages', type: 'select', required: true, options: ['50', '100', '250', '500', '1000'] },
-      { key: 'delay_ms', label: 'Delay (ms)', type: 'select', required: true, options: ['1000', '2000', '3000', '5000'] }
+      { key: 'delay_ms', label: 'Delay (ms)', type: 'select', required: true, options: ['1000', '2000', '3000', '5000'] },
+      { key: 'include_patterns', label: 'Include URL Patterns (Regex)', type: 'textarea', required: false, placeholder: '.*\\/docs\\/.*\n.*\\/help\\/.*' },
+      { key: 'exclude_patterns', label: 'Exclude URL Patterns (Regex)', type: 'textarea', required: false, placeholder: '.*\\/admin\\/.*\n.*\\.pdf$' },
+      { key: 'follow_external', label: 'Follow External Links', type: 'checkbox', required: false },
+      { key: 'respect_robots', label: 'Respect robots.txt', type: 'checkbox', required: false }
     ]
   }
 ];
@@ -132,7 +136,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
   const [step, setStep] = useState<'select' | 'configure' | 'test'>('select');
   const [selectedTemplate, setSelectedTemplate] = useState<ConnectorTemplate | null>(null);
   const [connectorName, setConnectorName] = useState('');
-  const [connectorConfig, setConnectorConfig] = useState<Record<string, string>>({});
+  const [connectorConfig, setConnectorConfig] = useState<Record<string, string | boolean | string[]>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -166,7 +170,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
     setConnectorConfig(initialConfig);
   };
 
-  const handleConfigChange = (key: string, value: string) => {
+  const handleConfigChange = (key: string, value: string | boolean | string[]) => {
     setConnectorConfig(prev => ({
       ...prev,
       [key]: value
@@ -348,7 +352,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
               </label>
               {field.type === 'select' ? (
                 <select 
-                  value={connectorConfig[field.key] || ''}
+                  value={String(connectorConfig[field.key] || '')}
                   onChange={(e) => handleConfigChange(field.key, e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
@@ -356,10 +360,28 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
                     <option key={option} value={option}>{option}</option>
                   ))}
                 </select>
+              ) : field.type === 'textarea' ? (
+                                  <textarea
+                  value={Array.isArray(connectorConfig[field.key]) ? (connectorConfig[field.key] as string[]).join('\n') : String(connectorConfig[field.key] || '')}
+                  onChange={(e) => handleConfigChange(field.key, e.target.value.split('\n').filter(line => line.trim()))}
+                  placeholder={field.placeholder}
+                  rows={3}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              ) : field.type === 'checkbox' ? (
+                <div className="flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(connectorConfig[field.key]) || false}
+                    onChange={(e) => handleConfigChange(field.key, e.target.checked)}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-600">Enable {field.label}</span>
+                </div>
               ) : (
                 <Input
                   type={field.type}
-                  value={connectorConfig[field.key] || ''}
+                  value={String(connectorConfig[field.key] || '')}
                   onChange={(e) => handleConfigChange(field.key, e.target.value)}
                   placeholder={field.placeholder}
                   required={field.required}

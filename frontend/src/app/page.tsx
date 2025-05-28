@@ -56,7 +56,13 @@ export default function HomePage() {
   });
 
   useEffect(() => {
-    const token = localStorage.getItem('rag_token');
+    // Set up the unauthorized handler to log out on 401 responses
+    apiClient.setUnauthorizedHandler(() => {
+      console.log('401 Unauthorized detected - logging out...');
+      logout();
+    });
+
+    const token = localStorage.getItem('cortexq_token') || localStorage.getItem('rag_token');
     if (token) {
       apiClient.setToken(token);
       setIsAuthenticated(true);
@@ -103,6 +109,9 @@ export default function HomePage() {
           console.log('Organizations response:', orgsResponse);
           setState(prev => ({ ...prev, organization: null, domains: [] }));
         }
+      } else {
+        // If user data fails to load, the unauthorized handler will logout if it's a 401
+        console.error('Failed to load user data:', userResponse.message);
       }
     } catch (error) {
       console.error('Failed to load user data:', error);
@@ -205,7 +214,7 @@ export default function HomePage() {
   if (state.loading && !state.user) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cortex-primary"></div>
       </div>
     );
   }
@@ -215,12 +224,25 @@ export default function HomePage() {
       {/* Logo */}
       <div className="p-6 border-b border-gray-100">
         <div className="flex items-center">
-          <div className="h-10 w-10 bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl flex items-center justify-center">
-            <Building2 className="h-6 w-6 text-white" />
+          <div className="h-12 w-12 flex items-center justify-center">
+            <img 
+              src="/LogoIcon.png" 
+              alt="CortexQ" 
+              className="h-10 w-10"
+              onError={(e) => {
+                // Fallback to gradient icon if logo doesn't load
+                e.currentTarget.style.display = 'none';
+                const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                if (fallback) fallback.classList.remove('hidden');
+              }}
+            />
+                         <div className="hidden h-12 w-12 bg-gradient-to-r from-cortex-primary to-cortex-aqua rounded-xl flex items-center justify-center">
+                <Building2 className="h-7 w-7 text-white" />
+            </div>
           </div>
           {state.sidebarOpen && (
             <div className="ml-3">
-              <h1 className="text-xl font-bold text-gray-900">Enterprise RAG</h1>
+                              <h1 className="text-xl font-bold text-gray-900">CortexQ</h1>
               <p className="text-sm text-gray-500">{state.organization?.name}</p>
             </div>
           )}
@@ -235,7 +257,7 @@ export default function HomePage() {
             onClick={handleBackToOrganization}
             className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 group ${
               state.currentView === 'organization'
-                ? 'bg-blue-50 text-blue-700 shadow-sm border border-blue-100'
+                ? 'bg-cortex-grey text-cortex-primary shadow-sm border border-cortex-primary/20'
                 : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
             }`}
           >
@@ -270,7 +292,7 @@ export default function HomePage() {
                     onClick={() => handleSelectDomain(domain)}
                     className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 group ${
                       state.selectedDomain?.id === domain.id
-                        ? 'bg-blue-50 text-blue-700 shadow-sm border border-blue-100'
+                        ? 'bg-cortex-grey text-cortex-primary shadow-sm border border-cortex-primary/20'
                         : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                     }`}
                   >
@@ -352,7 +374,7 @@ export default function HomePage() {
             <input
               type="text"
               placeholder="Search..."
-              className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-cortex-primary focus:border-transparent"
             />
           </div>
           
@@ -551,16 +573,29 @@ function LoginForm({ onLogin }: { onLogin: (email: string, password: string) => 
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+            <div className="min-h-screen bg-gradient-to-br from-cortex-grey to-white flex items-center justify-center p-4">
       <Card className="w-full max-w-md">
         <div className="p-8">
           <div className="text-center mb-8">
-            <div className="h-12 w-12 bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl flex items-center justify-center mx-auto mb-4">
-              <Building2 className="h-6 w-6 text-white" />
+            <div className="flex justify-center mb-4">
+              <img 
+                src="/LogoWord.png" 
+                alt="CortexQ" 
+                className="h-12 w-auto"
+                onError={(e) => {
+                  // Fallback to icon + text if logo doesn't load
+                  e.currentTarget.style.display = 'none';
+                  const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                  if (fallback) fallback.classList.remove('hidden');
+                }}
+              />
+              <div className="hidden h-12 w-12 bg-gradient-to-r from-cortex-primary to-cortex-aqua rounded-xl flex items-center justify-center">
+                <Building2 className="h-6 w-6 text-white" />
+              </div>
             </div>
-            <h1 className="text-2xl font-bold text-gray-900">Enterprise RAG</h1>
+            <h1 className="text-2xl font-bold text-gray-900">CortexQ</h1>
             <p className="text-gray-600">
-              {isRegister ? 'Create your account to get started' : 'AI-Powered Knowledge Management'}
+              {isRegister ? 'Create your account to get started' : 'Ask Smarter. Know Faster.'}
             </p>
           </div>
 
@@ -624,7 +659,7 @@ function LoginForm({ onLogin }: { onLogin: (email: string, password: string) => 
                 setEmail('');
                 setPassword('');
               }}
-              className="text-sm text-blue-600 hover:text-blue-500"
+              className="text-sm text-cortex-primary hover:text-cortex-navy"
             >
               {isRegister ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
             </button>

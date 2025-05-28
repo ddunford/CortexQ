@@ -218,8 +218,8 @@ async def register(
             }
         )
         
-        # Assign default user role
-        default_roles = user_data.roles if user_data.roles else ["user"]
+        # Assign admin role to organization owners, user role to others
+        default_roles = user_data.roles if user_data.roles else ["admin"]  # Organization owners get admin by default
         for role_name in default_roles:
             role_result = db.execute(
                 text("SELECT id FROM roles WHERE name = :name"),
@@ -229,12 +229,13 @@ async def register(
             if role:
                 db.execute(
                     text("""
-                        INSERT INTO user_roles (user_id, role_id)
-                        VALUES (:user_id, :role_id)
+                        INSERT INTO user_roles (user_id, role_id, assigned_at)
+                        VALUES (:user_id, :role_id, :assigned_at)
                     """),
                     {
                         "user_id": user_id,
-                        "role_id": str(role.id)
+                        "role_id": str(role.id),
+                        "assigned_at": datetime.utcnow()
                     }
                 )
             else:
@@ -245,29 +246,53 @@ async def register(
         org_name = f"{user_data.full_name or user_data.email.split('@')[0]}'s Organization"
         org_slug = f"org-{int(datetime.utcnow().timestamp())}"
         
+        # Set default limits for basic tier
+        tier_limits = {
+            "basic": {"max_users": 10, "max_storage_gb": 10, "max_domains": 3},
+            "professional": {"max_users": 50, "max_storage_gb": 100, "max_domains": 10},
+            "enterprise": {"max_users": 1000, "max_storage_gb": 1000, "max_domains": 50}
+        }
+        limits = tier_limits["basic"]
+        
         db.execute(
             text("""
-                INSERT INTO organizations (id, name, slug, description, size_category, subscription_tier, created_at)
-                VALUES (:id, :name, :slug, :description, :size_category, :subscription_tier, :created_at)
+                INSERT INTO organizations (
+                    id, name, slug, description, logo_url, website, industry,
+                    size_category, subscription_tier, max_users, max_storage_gb, max_domains,
+                    is_active, created_at
+                ) VALUES (
+                    :id, :name, :slug, :description, :logo_url, :website, :industry,
+                    :size_category, :subscription_tier, :max_users, :max_storage_gb, :max_domains,
+                    :is_active, :created_at
+                )
             """),
             {
                 "id": org_id,
                 "name": org_name,
                 "slug": org_slug,
                 "description": f"Personal workspace for {user_data.email}",
+                "logo_url": None,
+                "website": None,
+                "industry": None,
                 "size_category": "small",
                 "subscription_tier": "basic",
+                "max_users": limits["max_users"],
+                "max_storage_gb": limits["max_storage_gb"],
+                "max_domains": limits["max_domains"],
+                "is_active": True,
                 "created_at": datetime.utcnow()
             }
         )
         
         # Add user as owner of the organization
+        member_id = str(uuid.uuid4())
         db.execute(
             text("""
-                INSERT INTO organization_members (user_id, organization_id, role, is_active, joined_at)
-                VALUES (:user_id, :organization_id, :role, :is_active, :joined_at)
+                INSERT INTO organization_members (id, user_id, organization_id, role, is_active, joined_at)
+                VALUES (:id, :user_id, :organization_id, :role, :is_active, :joined_at)
             """),
             {
+                "id": member_id,
                 "user_id": user_id,
                 "organization_id": org_id,
                 "role": "owner",
@@ -280,8 +305,13 @@ async def register(
         domain_id = str(uuid.uuid4())
         db.execute(
             text("""
-                INSERT INTO organization_domains (id, organization_id, domain_name, display_name, description, is_active, created_at)
-                VALUES (:id, :organization_id, :domain_name, :display_name, :description, :is_active, :created_at)
+                INSERT INTO organization_domains (
+                    id, organization_id, domain_name, display_name, description,
+                    icon, color, created_by, is_active, created_at
+                ) VALUES (
+                    :id, :organization_id, :domain_name, :display_name, :description,
+                    :icon, :color, :created_by, :is_active, :created_at
+                )
             """),
             {
                 "id": domain_id,
@@ -289,6 +319,9 @@ async def register(
                 "domain_name": "general",
                 "display_name": "Knowledge Base",
                 "description": "Main knowledge base for documents and data sources",
+                "icon": "globe",
+                "color": "blue",
+                "created_by": user_id,
                 "is_active": True,
                 "created_at": datetime.utcnow()
             }
@@ -346,6 +379,140 @@ async def check_permission(
         "granted": has_perm,
         "resource": request.resource
     }
+
+
+@router.post("/debug/fix-organization-membership")
+async def fix_organization_membership(
+    current_user: dict = Depends(require_permission("admin:access")),
+    db: Session = Depends(get_db)
+):
+    """Fix users without organization membership (Admin only)"""
+    try:
+        # Get all users without organization membership
+        users_without_org = db.execute(
+            text("""
+                SELECT u.id, u.email, u.full_name 
+                FROM users u 
+                LEFT JOIN organization_members om ON u.id = om.user_id AND om.is_active = true
+                WHERE om.user_id IS NULL
+            """)
+        ).fetchall()
+        
+        if not users_without_org:
+            return {"message": "All users already have organization membership", "fixed_count": 0}
+        
+        fixed_users = []
+        
+        for user in users_without_org:
+            # Create organization for this user
+            org_id = str(uuid.uuid4())
+            org_name = f"{user.full_name or user.email.split('@')[0]}'s Organization"
+            org_slug = f"org-{int(datetime.utcnow().timestamp())}-{user.id[:8]}"
+            
+            # Set default limits for basic tier
+            limits = {"max_users": 10, "max_storage_gb": 10, "max_domains": 3}
+            
+            # Create organization
+            db.execute(
+                text("""
+                    INSERT INTO organizations (
+                        id, name, slug, description, logo_url, website, industry,
+                        size_category, subscription_tier, max_users, max_storage_gb, max_domains,
+                        is_active, created_at
+                    ) VALUES (
+                        :id, :name, :slug, :description, :logo_url, :website, :industry,
+                        :size_category, :subscription_tier, :max_users, :max_storage_gb, :max_domains,
+                        :is_active, :created_at
+                    )
+                """),
+                {
+                    "id": org_id,
+                    "name": org_name,
+                    "slug": org_slug,
+                    "description": f"Personal workspace for {user.email}",
+                    "logo_url": None,
+                    "website": None,
+                    "industry": None,
+                    "size_category": "small",
+                    "subscription_tier": "basic",
+                    "max_users": limits["max_users"],
+                    "max_storage_gb": limits["max_storage_gb"],
+                    "max_domains": limits["max_domains"],
+                    "is_active": True,
+                    "created_at": datetime.utcnow()
+                }
+            )
+            
+            # Add user as owner of the organization
+            member_id = str(uuid.uuid4())
+            db.execute(
+                text("""
+                    INSERT INTO organization_members (
+                        id, organization_id, user_id, role, joined_at, is_active
+                    ) VALUES (
+                        :id, :org_id, :user_id, 'owner', :joined_at, :is_active
+                    )
+                """),
+                {
+                    "id": member_id,
+                    "org_id": org_id,
+                    "user_id": str(user.id),
+                    "joined_at": datetime.utcnow(),
+                    "is_active": True
+                }
+            )
+            
+            # Create default domain for the organization
+            domain_id = str(uuid.uuid4())
+            db.execute(
+                text("""
+                    INSERT INTO organization_domains (
+                        id, organization_id, domain_name, display_name, description,
+                        icon, color, created_by, is_active, created_at
+                    ) VALUES (
+                        :id, :organization_id, :domain_name, :display_name, :description,
+                        :icon, :color, :created_by, :is_active, :created_at
+                    )
+                """),
+                {
+                    "id": domain_id,
+                    "organization_id": org_id,
+                    "domain_name": "general",
+                    "display_name": "Knowledge Base",
+                    "description": "Main knowledge base for documents and data sources",
+                    "icon": "globe",
+                    "color": "blue",
+                    "created_by": str(user.id),
+                    "is_active": True,
+                    "created_at": datetime.utcnow()
+                }
+            )
+            
+            fixed_users.append({
+                "user_email": user.email,
+                "organization_id": org_id,
+                "organization_name": org_name,
+                "domain_id": domain_id
+            })
+        
+        db.commit()
+        
+        # Log the fix
+        AuditLogger.log_event(
+            db, "organization_membership_fix", current_user["id"], "organization_members", "create",
+            f"Fixed organization membership for {len(fixed_users)} users",
+            {"fixed_users": fixed_users}
+        )
+        
+        return {
+            "message": f"Successfully fixed organization membership for {len(fixed_users)} users",
+            "fixed_count": len(fixed_users),
+            "fixed_users": fixed_users
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to fix organization membership: {str(e)}")
 
 
 # ============================================================================

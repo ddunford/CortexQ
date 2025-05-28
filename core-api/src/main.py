@@ -1,5 +1,5 @@
 """
-Enterprise RAG API - Main Application
+CortexQ API - Main Application
 Refactored from monolithic 3,663-line file to clean, modular architecture
 
 This file now serves as the application entry point with:
@@ -35,6 +35,7 @@ from routes import (
     auth_role_router,
     file_router, 
     web_scraping_router,
+    sources_router,
     chat_router,
     search_router,
     organization_router,
@@ -60,7 +61,7 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ============================================================================
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://admin:password@postgres:5432/rag_searcher")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://admin:password@postgres:5432/cortexq")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 JWT_SECRET = os.getenv("JWT_SECRET", "your-super-secret-jwt-key-change-in-production")
 DEBUG = os.getenv("DEBUG", "true").lower() == "true"
@@ -77,6 +78,7 @@ except Exception as e:
 # Global instances
 embeddings_model = None
 rag_processor = None
+background_job_processor = None
 session_manager = SessionManager(redis_client)
 
 # Initialize session manager in auth routes
@@ -89,9 +91,9 @@ set_session_manager(session_manager)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global embeddings_model, rag_processor
+    global embeddings_model, rag_processor, background_job_processor
     
-    logger.info("🚀 Starting Enhanced Core API...")
+    logger.info("🚀 Starting CortexQ Core API...")
     
     # Initialize embeddings model
     try:
@@ -119,35 +121,47 @@ async def lifespan(app: FastAPI):
             logger.error(f"❌ Failed to initialize RAG processor: {e}")
             rag_processor = None
     
-    # Start background processor
+    # Initialize background processor
     try:
-        from background_processor import start_background_processor
+        from background_processor import BackgroundJobProcessor
+        background_job_processor = BackgroundJobProcessor()
+        await background_job_processor.initialize()
+        logger.info("✅ Background processor initialized")
+        
+        # Start background processor task
         import asyncio
-        asyncio.create_task(start_background_processor())
+        asyncio.create_task(background_job_processor.start())
         logger.info("✅ Background processor started")
-    except ImportError:
-        logger.warning("⚠️ Background processor not available")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize background processor: {e}")
+        background_job_processor = None
     
-    logger.info("🎉 Enhanced Core API started successfully!")
+    # Initialize storage service and pass services to file routes
+    try:
+        from storage_utils import minio_storage
+        from routes.file_routes import set_services
+        set_services(background_job_processor, minio_storage, crawler_available=True)
+        logger.info("✅ File routes services configured")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not configure file routes services: {e}")
+    
+    logger.info("🎉 CortexQ Core API started successfully!")
     
     yield
     
-    logger.info("🛑 Shutting down Enhanced Core API...")
+    logger.info("🛑 Shutting down CortexQ Core API...")
     
     # Stop background processor
-    try:
-        from background_processor import stop_background_processor
-        stop_background_processor()
+    if background_job_processor:
+        background_job_processor.stop()
         logger.info("✅ Background processor stopped")
-    except ImportError:
-        pass
 
 # ============================================================================
 # APPLICATION SETUP
 # ============================================================================
 
 app = FastAPI(
-    title="Enhanced Core API - Enterprise RAG Searcher",
+    title="CortexQ Core API - AI-Powered Knowledge Management",
     description="Unified API with RBAC, multi-domain RAG, intent classification, and enterprise features",
     version="2.0.0",
     lifespan=lifespan
@@ -171,7 +185,7 @@ async def health_check():
     """Enhanced health check with service status"""
     return {
         "status": "healthy",
-        "service": "enhanced-core-api",
+        "service": "cortexq-core-api",
         "version": "2.0.0",
         "timestamp": datetime.utcnow().isoformat(),
         "services": {
@@ -192,6 +206,7 @@ app.include_router(auth_user_router, prefix="/auth/users", tags=["User Managemen
 app.include_router(auth_role_router, prefix="/auth/roles", tags=["Role Management"])
 app.include_router(file_router, prefix="/files", tags=["File Management"])
 app.include_router(web_scraping_router, prefix="/web-scraping", tags=["Web Scraping"])
+app.include_router(sources_router, prefix="/sources", tags=["Sources"])
 app.include_router(chat_router, prefix="/chat", tags=["Chat & RAG"])
 app.include_router(search_router, prefix="/search", tags=["Search & Discovery"])
 app.include_router(organization_router, prefix="/organizations", tags=["Organizations"])

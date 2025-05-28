@@ -1,9 +1,11 @@
+version: '3.8'
+
 services:
   # Database Layer
   postgres:
     image: pgvector/pgvector:pg15
     environment:
-      POSTGRES_DB: rag_searcher
+      POSTGRES_DB: cortexq
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: password
     ports:
@@ -11,7 +13,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U admin -d rag_searcher"]
+      test: ["CMD-SHELL", "pg_isready -U admin -d cortexq"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -60,7 +62,7 @@ services:
     ports:
       - "8001:8000"
     environment:
-      - DATABASE_URL=postgresql://admin:password@postgres:5432/rag_searcher
+      - DATABASE_URL=postgresql://admin:password@postgres:5432/cortexq
       - REDIS_URL=redis://redis:6379
       - JWT_SECRET=your-super-secret-jwt-key-change-in-production
       - DEBUG=true
@@ -97,6 +99,37 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # Ollama Model Initialization Service
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=ollama:11434
+    networks:
+      - rag-network
+    command: >
+      sh -c "
+        echo 'Waiting for Ollama to be ready...' &&
+        until curl -s http://ollama:11434/api/tags > /dev/null 2>&1; do
+          echo 'Ollama not ready, waiting 5 seconds...'
+          sleep 5
+        done &&
+        echo 'Ollama is ready! Checking for models...' &&
+        if [ $$(curl -s http://ollama:11434/api/tags | grep -c '\"models\":\\[\\]') -eq 1 ]; then
+          echo 'No models found, pulling llama3.2:1b...' &&
+          ollama pull llama3.2:1b &&
+          echo 'Model llama3.2:1b pulled successfully!'
+        else
+          echo 'Models already exist, skipping pull.'
+        fi &&
+        echo 'Ollama initialization complete!'
+      "
+    restart: "no"
 
   # Ollama for local LLM
   ollama:

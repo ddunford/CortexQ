@@ -1,5 +1,5 @@
 """
-Services package for Enterprise RAG API
+Services package for CortexQ API
 Contains business logic and external service integrations
 """
 

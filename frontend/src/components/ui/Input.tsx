@@ -21,7 +21,7 @@ export const Input: React.FC<InputProps> = ({
   const baseClasses = 'block px-3 py-2 border rounded-lg text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-offset-0 transition-colors duration-200';
   const errorClasses = error 
     ? 'border-red-300 focus:border-red-500 focus:ring-red-500' 
-    : 'border-gray-300 focus:border-blue-500 focus:ring-blue-500';
+          : 'border-gray-300 focus:border-cortex-primary focus:ring-cortex-primary';
   const widthClasses = fullWidth ? 'w-full' : '';
   const iconPadding = icon ? 'pl-10' : '';
 
