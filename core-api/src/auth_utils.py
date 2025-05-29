@@ -162,19 +162,36 @@ class PermissionManager:
     def has_domain_access(db: Session, user_id: str, domain: str) -> bool:
         """Check if user has access to specific domain"""
         # Check if user has access to domain through organization membership
-        result = db.execute(
-            text("""
-                SELECT 1
-                FROM organization_members om
-                JOIN organization_domains od ON om.organization_id = od.organization_id
-                WHERE om.user_id = :user_id 
-                AND od.domain_name = :domain
-                AND om.is_active = true 
-                AND od.is_active = true
-                LIMIT 1
-            """),
-            {"user_id": user_id, "domain": domain}
-        ).fetchone()
+        # Handle both domain IDs and domain names for backwards compatibility
+        if len(domain) == 36 and domain.count('-') == 4:  # Likely a UUID (domain ID)
+            result = db.execute(
+                text("""
+                    SELECT 1
+                    FROM organization_members om
+                    JOIN organization_domains od ON om.organization_id = od.organization_id
+                    WHERE om.user_id = :user_id 
+                    AND od.id = :domain_id
+                    AND om.is_active = true 
+                    AND od.is_active = true
+                    LIMIT 1
+                """),
+                {"user_id": user_id, "domain_id": domain}
+            ).fetchone()
+        else:
+            # Legacy support for domain names
+            result = db.execute(
+                text("""
+                    SELECT 1
+                    FROM organization_members om
+                    JOIN organization_domains od ON om.organization_id = od.organization_id
+                    WHERE om.user_id = :user_id 
+                    AND od.domain_name = :domain_name
+                    AND om.is_active = true 
+                    AND od.is_active = true
+                    LIMIT 1
+                """),
+                {"user_id": user_id, "domain_name": domain}
+            ).fetchone()
         
         return result is not None
     
