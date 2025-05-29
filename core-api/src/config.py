@@ -26,6 +26,13 @@ class Settings:
         self.ollama_base_url = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
         self.openai_api_key = os.getenv('OPENAI_API_KEY', '')
         
+        # Embedding settings
+        self.EMBEDDING_PROVIDER = os.getenv('EMBEDDING_PROVIDER', 'ollama')  # 'openai' or 'ollama'
+        self.EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')  # OpenAI model
+        self.VECTOR_DIMENSION = int(os.getenv('VECTOR_DIMENSION', '768'))  # Updated for nomic-embed-text
+        self.OLLAMA_BASE_URL = self.ollama_base_url  # Alias for consistency
+        self.OPENAI_API_KEY = self.openai_api_key  # Alias for consistency
+        
         # MinIO settings
         self.minio_endpoint = os.getenv('MINIO_ENDPOINT', 'localhost:9000')
         self.minio_access_key = os.getenv('MINIO_ACCESS_KEY', 'minioadmin')

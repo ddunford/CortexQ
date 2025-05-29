@@ -24,16 +24,18 @@ import {
   ArrowLeft,
   Bug,
   Code,
-  X
+  X,
+  Book,
+  ExternalLink
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import CitationText from '../ui/CitationText';
-import { Domain, Document, SearchResult, AnalyticsMetrics, ConnectorConfig } from '../../types';
-import { apiClient } from '../../utils/api';
+import { Organization, Domain, Document, ConnectorConfig, SearchQuery, AnalyticsMetrics, ChatSession, ApiResponse } from '../../types';
+import { api } from '../../utils/api';
 import { ConnectorConfigModal } from '../connectors/ConnectorConfigModal';
-import { WebScraperManager } from '../connectors/WebScraperManager';
+import WebScraperManager from '../connectors/WebScraperManager';
 
 interface DomainWorkspaceProps {
   domain: Domain;
@@ -93,6 +95,20 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   const [sessionId, setSessionId] = useState<string | null>(null);
   const chatContainerRef = React.useRef<HTMLDivElement>(null);
 
+  // Stabilize selectedConnector to prevent re-render issues
+  const stableSelectedConnector = React.useMemo(() => {
+    if (!selectedConnector) return null;
+    
+    // Ensure the connector has all required properties
+    return {
+      ...selectedConnector,
+      type: selectedConnector.type || 'unknown',
+      authConfig: selectedConnector.authConfig || {},
+      syncConfig: selectedConnector.syncConfig || {},
+      mappingConfig: selectedConnector.mappingConfig || {}
+    };
+  }, [selectedConnector?.id, selectedConnector?.type, selectedConnector?.name]);
+
   const tabs = [
     { id: 'knowledge', label: 'Knowledge Base', icon: FileText, description: 'Manage documents and files' },
     { id: 'chat', label: 'AI Assistant', icon: MessageCircle, description: 'Chat with domain AI' },
@@ -121,7 +137,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     try {
       switch (activeTab) {
         case 'knowledge':
-          const docsResponse = await apiClient.getFiles(domain.id);
+          const docsResponse = await api.getFiles(domain.id);
           if (docsResponse.success) {
             // Map API response to frontend format - API returns {files: [...], total: number}
             const files = docsResponse.data?.files || [];
@@ -139,22 +155,43 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
           break;
         case 'sources':
           console.log('Loading connectors for domain:', domain.id);
-          const connectorsResponse = await apiClient.getConnectors(domain.id);
+          const connectorsResponse = await api.getConnectors(domain.id);
           console.log('Connectors API response:', connectorsResponse);
           
           if (connectorsResponse.success && connectorsResponse.data && Array.isArray(connectorsResponse.data.connectors)) {
             // Transform backend response to match frontend interface
-            const mappedConnectors = connectorsResponse.data.connectors.map((connector: any) => ({
-              id: connector.id,
-              type: connector.connector_type,
-              name: connector.name,
-              isEnabled: connector.is_enabled,
-              status: connector.status,
-              lastSync: connector.last_sync_at,
-              authConfig: connector.auth_config || {},
-              syncConfig: connector.sync_config || {},
-              mappingConfig: connector.mapping_config || {}
-            }));
+            const mappedConnectors = connectorsResponse.data.connectors.map((connector: any) => {
+              console.log('Raw connector from API:', connector);
+              console.log('connector.connector_type:', connector.connector_type);
+              console.log('typeof connector.connector_type:', typeof connector.connector_type);
+              
+              // Handle both string and enum cases for connector_type
+              let connectorType = 'unknown';
+              if (connector.connector_type) {
+                if (typeof connector.connector_type === 'string') {
+                  connectorType = connector.connector_type;
+                } else if (connector.connector_type.value) {
+                  connectorType = connector.connector_type.value;
+                } else if (connector.connector_type.toString) {
+                  connectorType = connector.connector_type.toString();
+                }
+              }
+              
+              const mappedConnector = {
+                id: connector.id,
+                type: connectorType,
+                name: connector.name,
+                isEnabled: connector.is_enabled,
+                status: connector.status,
+                lastSync: connector.last_sync_at,
+                authConfig: connector.auth_config || {},
+                syncConfig: connector.sync_config || {},
+                mappingConfig: connector.mapping_config || {}
+              };
+              
+              console.log('Mapped connector:', mappedConnector);
+              return mappedConnector;
+            });
             console.log('Mapped connectors:', mappedConnectors);
             setConnectors(mappedConnectors);
           } else {
@@ -163,7 +200,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
           }
           break;
         case 'analytics':
-          const analyticsResponse = await apiClient.getAnalytics(domain.id);
+          const analyticsResponse = await api.getAnalytics(domain.id);
           if (analyticsResponse.success) {
             setAnalytics(analyticsResponse.data);
           }
@@ -223,7 +260,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
         includeContentTypes.push('api/jira', 'api/github', 'api/confluence', 'web/crawled');
       }
 
-      const response = await apiClient.search({
+      const response = await api.search({
         query: searchQuery,
         domainId: domain.id, // Use domain ID
         filters: {
@@ -266,7 +303,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     setUploading(true);
     try {
       for (const file of files) {
-        const uploadResponse = await apiClient.uploadFile(file, domain.id);
+        const uploadResponse = await api.uploadFile(file, domain.id);
         if (!uploadResponse.success) {
           // Handle upload failure silently or with proper error reporting
         }
@@ -288,7 +325,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   // Reindexing functions
   const loadProcessingStatus = async () => {
     try {
-      const response = await apiClient.getProcessingStatus(domain.id);
+      const response = await api.getProcessingStatus(domain.id);
       if (response.success) {
         setProcessingStatus(response.data);
       }
@@ -307,7 +344,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
 
     setReindexing(true);
     try {
-      const response = await apiClient.reindexFiles(domain.id, force);
+      const response = await api.reindexFiles(domain.id, force);
       
       if (response.success) {
         alert(`Successfully queued ${response.data.files_queued} files for reindexing. Estimated completion: ${response.data.estimated_completion}`);
@@ -331,7 +368,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   // File action handlers
   const handleViewFile = async (file: Document) => {
     try {
-      const response = await apiClient.getFile(file.id);
+      const response = await api.getFile(file.id);
       if (response.success) {
         setSelectedFile(response.data);
         setViewModalOpen(true);
@@ -344,7 +381,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
 
   const handleDownloadFile = async (file: Document) => {
     try {
-      const response = await apiClient.downloadFile(file.id);
+      const response = await api.downloadFile(file.id);
       if (response.success && response.data) {
         // Open the download URL in a new tab/window
         const link = document.createElement('a');
@@ -369,7 +406,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     }
 
     try {
-      const response = await apiClient.deleteFile(file.id);
+      const response = await api.deleteFile(file.id);
       if (response.success) {
         // Remove the file from the local state
         setDocuments(docs => docs.filter(d => d.id !== file.id));
@@ -399,7 +436,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     setChatLoading(true);
 
     try {
-      const response = await apiClient.sendMessage({
+      const response = await api.sendMessage({
         message: userMessage.content,
         domainId: domain.id,
         sessionId: sessionId || undefined,
@@ -454,7 +491,35 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   };
 
   const handleConnectorCreated = (connector: ConnectorConfig) => {
-    setConnectors(prev => [...prev, connector]);
+    // Apply the same mapping logic as loadWorkspaceData to ensure consistency
+    console.log('New connector created:', connector);
+    
+    // Handle both string and enum cases for connector_type
+    let connectorType = 'unknown';
+    if (connector.connector_type) {
+      if (typeof connector.connector_type === 'string') {
+        connectorType = connector.connector_type;
+      } else if (connector.connector_type.value) {
+        connectorType = connector.connector_type.value;
+      } else if (connector.connector_type.toString) {
+        connectorType = connector.connector_type.toString();
+      }
+    }
+    
+    const mappedConnector = {
+      id: connector.id,
+      type: connectorType,
+      name: connector.name,
+      isEnabled: connector.is_enabled || true,
+      status: connector.status || 'pending',
+      lastSync: connector.last_sync_at || null,
+      authConfig: connector.auth_config || {},
+      syncConfig: connector.sync_config || {},
+      mappingConfig: connector.mapping_config || {}
+    };
+    
+    console.log('Mapped new connector:', mappedConnector);
+    setConnectors(prev => [...prev, mappedConnector]);
     setShowConnectorModal(false);
   };
 
@@ -476,7 +541,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     }
 
     try {
-      const response = await apiClient.deleteConnector(domain.id, connectorId);
+      const response = await api.deleteConnector(domain.id, connectorId);
       
       if (response.success) {
         // Remove connector from state
@@ -724,38 +789,93 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
                     className={`max-w-xs lg:max-w-md px-3 py-2 rounded-lg ${
                       message.type === 'user'
                         ? 'bg-blue-600 text-white'
-                        : 'bg-white border border-gray-200 text-gray-900'
+                        : 'bg-white border border-gray-200 text-gray-900 shadow-sm'
                     }`}
                   >
                     {message.type === 'assistant' ? (
-                      <CitationText 
-                        content={message.content} 
-                        sources={message.sources}
-                        className="text-sm"
-                      />
+                      <div className="space-y-3">
+                        <CitationText 
+                          content={message.content} 
+                          sources={message.sources}
+                          className="text-sm leading-relaxed"
+                        />
+                        
+                        {/* Confidence indicator */}
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-gray-500">
+                            {formatTimestamp(message.timestamp)}
+                          </span>
+                          {message.confidence && (
+                            <div className="flex items-center space-x-1">
+                              <div className={`w-2 h-2 rounded-full ${
+                                message.confidence > 0.7 ? 'bg-green-500' : 
+                                message.confidence > 0.5 ? 'bg-yellow-500' : 'bg-red-500'
+                              }`} />
+                              <span className="text-gray-600 font-medium">
+                                {Math.round(message.confidence * 100)}% confident
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Sources section */}
+                        {message.sources && message.sources.length > 0 && (
+                          <div className="pt-2 border-t border-gray-100">
+                            <div className="flex items-center space-x-1 mb-2">
+                              <Book className="h-3 w-3 text-gray-500" />
+                              <span className="text-xs text-gray-500 font-medium">
+                                Sources ({message.sources.length})
+                              </span>
+                            </div>
+                            <div className="space-y-1">
+                              {message.sources.slice(0, 3).map((source, idx) => {
+                                const isWebPage = source.url;
+                                const IconComponent = isWebPage ? ExternalLink : FileText;
+                                
+                                return (
+                                  <div 
+                                    key={idx} 
+                                    className="flex items-center space-x-2 text-xs text-gray-600 hover:text-gray-800 transition-colors"
+                                  >
+                                    <IconComponent className="h-3 w-3 flex-shrink-0" />
+                                    {isWebPage ? (
+                                      <a 
+                                        href={source.url} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        className="hover:underline truncate flex-1"
+                                        title={source.title}
+                                      >
+                                        {source.title}
+                                      </a>
+                                    ) : (
+                                      <span className="truncate flex-1" title={source.title}>
+                                        {source.title}
+                                      </span>
+                                    )}
+                                    <span className="text-gray-400 text-xs">
+                                      {source.confidence_score}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                              {message.sources.length > 3 && (
+                                <div className="text-xs text-gray-500 italic">
+                                  +{message.sources.length - 3} more sources
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     ) : (
                       <p className="text-sm">{message.content}</p>
                     )}
-                    <div className="flex items-center justify-between mt-1">
-                      <span className={`text-xs ${
-                        message.type === 'user' ? 'text-blue-100' : 'text-gray-500'
-                      }`}>
-                        {formatTimestamp(message.timestamp)}
-                      </span>
-                      {message.type === 'assistant' && message.confidence && (
-                        <span className="text-xs text-gray-500">
-                          {Math.round(message.confidence * 100)}% confident
+                    {message.type === 'user' && (
+                      <div className="mt-1">
+                        <span className="text-xs text-blue-100">
+                          {formatTimestamp(message.timestamp)}
                         </span>
-                      )}
-                    </div>
-                    {message.sources && message.sources.length > 0 && (
-                      <div className="mt-2 pt-2 border-t border-gray-200">
-                        <p className="text-xs text-gray-500 mb-1">Sources:</p>
-                        {message.sources.slice(0, 2).map((source, idx) => (
-                          <div key={idx} className="text-xs text-gray-600">
-                            • {source.title || 'Document'}
-                          </div>
-                        ))}
                       </div>
                     )}
                   </div>
@@ -936,8 +1056,27 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
 
   const renderDataSources = () => {
     // If a connector is selected, show its detailed view
-    if (selectedConnector) {
-      return (
+    if (stableSelectedConnector) {
+      console.log('=== CONNECTOR DEBUG START ===');
+      console.log('Selected connector:', stableSelectedConnector);
+      console.log('Connector type:', stableSelectedConnector.type);
+      console.log('Type check web_scraper:', stableSelectedConnector.type === 'web_scraper');
+      console.log('Type check WEB_SCRAPER:', stableSelectedConnector.type === 'WEB_SCRAPER');
+      console.log('Type includes scraper:', (stableSelectedConnector.type || '').toLowerCase().includes('scraper'));
+      console.log('=== CONNECTOR DEBUG END ===');
+      
+      // Bulletproof check for web scraper - with additional safety checks
+      const connectorType = stableSelectedConnector.type || '';
+      const isWebScraper = connectorType === 'web_scraper' || 
+                          connectorType === 'WEB_SCRAPER' ||
+                          connectorType.toLowerCase().includes('scraper') ||
+                          connectorType.toLowerCase().includes('web');
+      
+      console.log('Final isWebScraper result:', isWebScraper);
+      console.log('Connector type for safety:', connectorType);
+      
+      // Early return to prevent re-render issues
+      const connectorView = (
         <div className="space-y-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
@@ -950,38 +1089,51 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
                 <span>Back to Connectors</span>
               </Button>
               <div>
-                <h3 className="text-lg font-semibold text-gray-900">{selectedConnector.name}</h3>
-                <p className="text-gray-600 capitalize">{selectedConnector.type} Configuration</p>
+                <h3 className="text-lg font-semibold text-gray-900">{stableSelectedConnector.name}</h3>
+                <p className="text-gray-600 capitalize">{connectorType} Configuration</p>
               </div>
             </div>
             <Button 
               variant="danger" 
               size="sm"
-              onClick={() => handleConnectorDelete(selectedConnector.id, selectedConnector.name)}
+              onClick={() => handleConnectorDelete(stableSelectedConnector.id, stableSelectedConnector.name)}
               icon={<Trash2 className="h-4 w-4" />}
             >
               Delete Connector
             </Button>
           </div>
 
-          {/* Render specific connector manager based on type */}
-          {selectedConnector.type === 'web_scraper' ? (
-            <WebScraperManager
-              connector={selectedConnector}
-              domainId={domain.id}
-              onConnectorUpdated={handleConnectorUpdated}
-            />
+          {/* Force WebScraperManager for web_scraper type */}
+          {(connectorType === 'web_scraper' || isWebScraper) ? (
+            <div>
+              <div className="p-2 mb-4 bg-green-50 border border-green-200 rounded text-sm text-green-800">
+                ✅ Web Scraper Manager loaded successfully! Type: "{connectorType}"
+              </div>
+              <WebScraperManager
+                connector={stableSelectedConnector}
+                domainId={domain.id}
+                onConnectorUpdated={handleConnectorUpdated}
+              />
+            </div>
           ) : (
             <Card>
               <CardContent className="text-center py-8">
                 <Settings className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                 <h3 className="text-lg font-medium text-gray-900 mb-2">Configuration Not Available</h3>
-                <p className="text-gray-500">Advanced configuration for {selectedConnector.type} connectors is coming soon.</p>
+                <p className="text-gray-500">Advanced configuration for {connectorType} connectors is coming soon.</p>
+                <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded text-xs">
+                  <strong>Debug Info:</strong>
+                  <br />Type: "{connectorType}"
+                  <br />isWebScraper: {isWebScraper.toString()}
+                  <br />Check console for more details
+                </div>
               </CardContent>
             </Card>
           )}
         </div>
       );
+      
+      return connectorView;
     }
 
     // Default connector list view

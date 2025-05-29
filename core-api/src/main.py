@@ -98,7 +98,8 @@ async def lifespan(app: FastAPI):
     # Initialize embeddings model
     try:
         logger.info("Loading embeddings model...")
-        embeddings_model = SentenceTransformer('all-MiniLM-L6-v2')
+        # Use a 768-dimensional model to match our system configuration
+        embeddings_model = SentenceTransformer('all-mpnet-base-v2')  # 768-dimensional model
         logger.info("✅ Embeddings model loaded")
     except Exception as e:
         logger.error(f"❌ Failed to load embeddings model: {e}")

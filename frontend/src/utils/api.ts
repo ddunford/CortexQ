@@ -354,6 +354,15 @@ class ApiClient {
     return this.request(`/domains/${domainId}/connectors`);
   }
 
+  async getConnector(domainId: string, connectorId: string): Promise<ApiResponse<ConnectorConfig>> {
+    return this.request(`/domains/${domainId}/connectors/${connectorId}`);
+  }
+
+  // Simple getConnector method for just connector ID
+  async getConnectorById(connectorId: string): Promise<ApiResponse<ConnectorConfig>> {
+    return this.request(`/connectors/${connectorId}`);
+  }
+
   async createConnector(domainId: string, data: Partial<ConnectorConfig>): Promise<ApiResponse<ConnectorConfig>> {
     return this.request(`/domains/${domainId}/connectors`, {
       method: 'POST',
@@ -363,6 +372,14 @@ class ApiClient {
 
   async updateConnector(domainId: string, connectorId: string, data: Partial<ConnectorConfig>): Promise<ApiResponse<ConnectorConfig>> {
     return this.request(`/domains/${domainId}/connectors/${connectorId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  // Simple updateConnector method for just connector ID
+  async updateConnectorById(connectorId: string, data: Partial<ConnectorConfig>): Promise<ApiResponse<ConnectorConfig>> {
+    return this.request(`/connectors/${connectorId}`, {
       method: 'PUT',
       body: JSON.stringify(data),
     });
@@ -384,6 +401,23 @@ class ApiClient {
     return this.request(`/domains/${domainId}/connectors/${connectorId}/sync`, {
       method: 'POST',
     });
+  }
+
+  // Two-phase web scraper APIs
+  async discoverUrls(domainId: string, connectorId: string): Promise<ApiResponse<any>> {
+    return this.request(`/domains/${domainId}/connectors/${connectorId}/discover-urls`, {
+      method: 'POST',
+    });
+  }
+
+  async scrapeDiscoveredUrls(domainId: string, connectorId: string): Promise<ApiResponse<any>> {
+    return this.request(`/domains/${domainId}/connectors/${connectorId}/scrape-urls`, {
+      method: 'POST',
+    });
+  }
+
+  async getDiscoveredUrls(domainId: string, connectorId: string): Promise<ApiResponse<any>> {
+    return this.request(`/domains/${domainId}/connectors/${connectorId}/discovered-urls`);
   }
 
   // Health Check APIs
@@ -478,6 +512,34 @@ class ApiClient {
     }>;
   }>> {
     return this.request(`/domains/${domainId}/connectors/${connectorId}/crawl-stats`);
+  }
+
+  async getSyncJobs(domainId: string, connectorId: string, params?: {
+    skip?: number;
+    limit?: number;
+    status?: string;
+  }): Promise<ApiResponse<Array<{
+    id: string;
+    connector_id: string;
+    status: string;
+    started_at?: string;
+    completed_at?: string;
+    records_processed: number;
+    records_created: number;
+    records_updated: number;
+    error_message?: string;
+    metadata?: any;
+    created_at: string;
+  }>>> {
+    const searchParams = new URLSearchParams();
+    if (params?.skip) searchParams.append('skip', params.skip.toString());
+    if (params?.limit) searchParams.append('limit', params.limit.toString());
+    if (params?.status) searchParams.append('status', params.status);
+
+    const queryString = searchParams.toString();
+    const url = `/domains/${domainId}/connectors/${connectorId}/sync-jobs${queryString ? `?${queryString}` : ''}`;
+    
+    return this.request(url);
   }
 
   async updateCrawlRules(domainId: string, connectorId: string, rules: {
@@ -924,7 +986,7 @@ class ApiClient {
 }
 
 // Create singleton instance
-export const apiClient = new ApiClient();
+export const api = new ApiClient();
 
 // WebSocket utilities for real-time chat
 export class ChatWebSocket {
@@ -984,4 +1046,4 @@ export class ChatWebSocket {
   }
 }
 
-export default apiClient; 
+export default api; 

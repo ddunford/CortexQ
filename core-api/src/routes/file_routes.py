@@ -695,7 +695,7 @@ async def get_source_content(
     current_user: dict = Depends(require_permission("files:read")),
     db: Session = Depends(get_db)
 ):
-    """Get source content for citations - retrieve full content of a file/chunk"""
+    """Get source content for citations - retrieve full content of a file/chunk or web page"""
     try:
         # Get user's organization
         org_result = db.execute(
@@ -713,19 +713,54 @@ async def get_source_content(
         
         organization_id = str(org_result.organization_id)
         
-        # Get file info with organization isolation
-        file_result = db.execute(
+        # First, determine the source type by checking embeddings
+        source_type_result = db.execute(
             text("""
-                SELECT f.id, f.filename, f.content_type, f.size_bytes, f.organization_id,
-                       f.domain_id, f.storage_type, f.storage_path, f.original_filename
-                FROM files f
-                WHERE f.id = :source_id AND f.organization_id = :organization_id
+                SELECT source_type
+                FROM embeddings
+                WHERE source_id = :source_id AND organization_id = :organization_id
+                LIMIT 1
             """),
             {"source_id": source_id, "organization_id": organization_id}
         ).fetchone()
         
-        if not file_result:
-            raise HTTPException(status_code=404, detail="Source file not found")
+        if not source_type_result:
+            raise HTTPException(status_code=404, detail="Source not found")
+        
+        source_type = source_type_result.source_type
+        source_result = None
+        
+        # Query the appropriate table based on source type
+        if source_type == "file":
+            # Get file info with organization isolation
+            source_result = db.execute(
+                text("""
+                    SELECT f.id, f.filename as title, f.content_type, f.size_bytes, f.organization_id,
+                           f.domain_id, f.storage_type, f.object_key, f.original_filename, 
+                           'file' as source_type, NULL as url
+                    FROM files f
+                    WHERE f.id = :source_id AND f.organization_id = :organization_id
+                """),
+                {"source_id": source_id, "organization_id": organization_id}
+            ).fetchone()
+        elif source_type == "web_page":
+            # Get web page info with organization isolation
+            source_result = db.execute(
+                text("""
+                    SELECT cp.id, cp.title, 'text/html' as content_type, 
+                           LENGTH(cp.content) as size_bytes, cp.organization_id,
+                           cp.domain_id, 'web' as storage_type, NULL as object_key, 
+                           cp.title as original_filename, 'web_page' as source_type, cp.url
+                    FROM crawled_pages cp
+                    WHERE cp.id = :source_id AND cp.organization_id = :organization_id
+                """),
+                {"source_id": source_id, "organization_id": organization_id}
+            ).fetchone()
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported source type: {source_type}")
+        
+        if not source_result:
+            raise HTTPException(status_code=404, detail="Source not found")
         
         # If chunk_index is specified, try to get the specific chunk content
         if chunk_index is not None:
@@ -750,13 +785,14 @@ async def get_source_content(
                 return {
                     "content": chunk_result.content_text,
                     "chunk_index": chunk_result.chunk_index,
-                    "filename": file_result.original_filename or file_result.filename,
-                    "content_type": file_result.content_type,
+                    "filename": source_result.original_filename or source_result.title,
+                    "content_type": source_result.content_type,
                     "metadata": chunk_result.metadata,
-                    "source_type": "chunk"
+                    "source_type": "chunk",
+                    "url": source_result.url if source_type == "web_page" else None
                 }
         
-        # Fallback: Get all chunks for this file and combine them
+        # Fallback: Get all chunks for this source and combine them
         chunks_result = db.execute(
             text("""
                 SELECT content_text, chunk_index, metadata
@@ -774,30 +810,54 @@ async def get_source_content(
             return {
                 "content": full_content,
                 "chunk_count": len(chunks_result),
-                "filename": file_result.original_filename or file_result.filename,
-                "content_type": file_result.content_type,
-                "source_type": "full_document_reconstructed"
+                "filename": source_result.original_filename or source_result.title,
+                "content_type": source_result.content_type,
+                "source_type": f"full_{source_type}_reconstructed",
+                "url": source_result.url if source_type == "web_page" else None
             }
         
-        # Final fallback: Try to get content from storage if available
-        if file_result.storage_type == "minio" and minio_storage:
+        # Final fallback for files: Try to get content from storage if available
+        if source_type == "file" and source_result.storage_type == "minio" and minio_storage:
             try:
-                # Try to get content from MinIO
-                content = minio_storage.get_file_content(file_result.storage_path)
+                # Try to get content from MinIO using object_key
+                content = minio_storage.get_file_content(source_result.object_key)
                 if content:
                     return {
                         "content": content.decode('utf-8') if isinstance(content, bytes) else content,
-                        "filename": file_result.original_filename or file_result.filename,
-                        "content_type": file_result.content_type,
+                        "filename": source_result.original_filename or source_result.title,
+                        "content_type": source_result.content_type,
                         "source_type": "direct_storage"
                     }
             except Exception as e:
                 logger.warning(f"Failed to get content from storage: {e}")
         
+        # Final fallback for web pages: Get content directly from crawled_pages
+        if source_type == "web_page":
+            try:
+                page_content_result = db.execute(
+                    text("""
+                        SELECT content, title, url
+                        FROM crawled_pages
+                        WHERE id = :source_id AND organization_id = :organization_id
+                    """),
+                    {"source_id": source_id, "organization_id": organization_id}
+                ).fetchone()
+                
+                if page_content_result and page_content_result.content:
+                    return {
+                        "content": page_content_result.content,
+                        "filename": page_content_result.title,
+                        "content_type": "text/html",
+                        "source_type": "direct_web_content",
+                        "url": page_content_result.url
+                    }
+            except Exception as e:
+                logger.warning(f"Failed to get web page content: {e}")
+        
         # No content found
         raise HTTPException(
             status_code=404, 
-            detail="Content not found. File may not have been processed yet or content is not available."
+            detail="Content not found. Source may not have been processed yet or content is not available."
         )
         
     except HTTPException:

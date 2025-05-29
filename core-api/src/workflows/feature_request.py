@@ -9,7 +9,8 @@ from typing import Dict, Any, List, Optional
 import httpx
 from sqlalchemy.orm import Session
 
-from models import FeatureAnalysisResult, FeatureRequest, Priority
+from models.workflow_models import FeatureAnalysisResult, Priority
+from models import FeatureRequest
 from config import settings
 
 logger = logging.getLogger(__name__)

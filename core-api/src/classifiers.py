@@ -68,7 +68,9 @@ class IntentClassifier:
                 "keywords": [
                     "how", "tutorial", "guide", "documentation", "learn",
                     "training", "help", "explain", "show", "teach",
-                    "understand", "configure", "setup", "install"
+                    "understand", "configure", "setup", "install",
+                    "create", "job", "task", "template", "clone", "workflow",
+                    "process", "procedure", "step", "instructions", "manual"
                 ],
                 "patterns": [
                     r"how.*do.*i.*",
@@ -77,7 +79,13 @@ class IntentClassifier:
                     r"guide.*for.*",
                     r"help.*with.*",
                     r"explain.*",
-                    r"show.*me.*"
+                    r"show.*me.*",
+                    r"how.*create.*",
+                    r"how.*do.*I.*create.*",
+                    r"create.*job.*",
+                    r".*job.*template.*",
+                    r".*clone.*job.*",
+                    r"steps.*to.*create.*"
                 ]
             },
             "general_query": {

@@ -11,7 +11,8 @@ from datetime import datetime
 import httpx
 from sqlalchemy.orm import Session
 
-from models import BugAnalysisResult, KnownIssue, Priority, WorkflowExecution
+from models.workflow_models import BugAnalysisResult, Priority
+from models import KnownIssue, WorkflowExecution
 from config import settings
 
 logger = logging.getLogger(__name__)

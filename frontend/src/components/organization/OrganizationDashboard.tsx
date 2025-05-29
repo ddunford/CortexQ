@@ -18,7 +18,7 @@ import {
 import Card, { CardHeader, CardTitle, CardContent } from '../ui/Card';
 import Button from '../ui/Button';
 import { Organization, Domain, Member, AnalyticsMetrics } from '../../types';
-import { apiClient } from '../../utils/api';
+import { api } from '../../utils/api';
 
 interface OrganizationDashboardProps {
   organization: Organization;
@@ -46,8 +46,8 @@ const OrganizationDashboard: React.FC<OrganizationDashboardProps> = ({
     setLoading(true);
     try {
       const [domainsResponse, analyticsResponse] = await Promise.all([
-        apiClient.getDomains(organization.id),
-        apiClient.getAnalytics(),
+        api.getDomains(organization.id),
+        api.getAnalytics(),
       ]);
 
       if (domainsResponse.success) {

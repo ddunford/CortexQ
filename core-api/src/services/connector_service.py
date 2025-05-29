@@ -40,6 +40,11 @@ try:
 except ImportError:
     GoogleDriveConnector = BaseConnector
 
+try:
+    from connectors.web_scraper_connector import WebScraperConnector
+except ImportError:
+    WebScraperConnector = BaseConnector
+
 # Remove problematic models import that may cause circular imports
 # from models import Connector, SyncJob
 
@@ -52,7 +57,8 @@ class ConnectorService:
         ConnectorType.GITHUB: GitHubConnector,
         ConnectorType.CONFLUENCE: ConfluenceConnector,
         ConnectorType.SLACK: SlackConnector,
-        ConnectorType.GOOGLE_DRIVE: GoogleDriveConnector
+        ConnectorType.GOOGLE_DRIVE: GoogleDriveConnector,
+        ConnectorType.WEB_SCRAPER: WebScraperConnector
     }
     
     def __init__(self, db: Session, oauth_service: OAuthService):
@@ -149,7 +155,25 @@ class ConnectorService:
             
             # Create connector instance and perform sync
             connector = self.create_connector_instance(connector_data)
-            sync_result = await connector.sync(full_sync=full_sync)
+            
+            # Special handling for web scraper connectors
+            if connector_type == ConnectorType.WEB_SCRAPER:
+                # Get domain_id for web scraper storage
+                domain_id = connector_data.get("domain_id")
+                if not domain_id:
+                    raise ValueError("Web scraper connector missing domain_id")
+                
+                # Call the special sync method with database access
+                sync_result = await connector.sync_with_storage(
+                    db=self.db,
+                    connector_id=connector_id,
+                    organization_id=organization_id,
+                    domain_id=domain_id,
+                    full_sync=full_sync
+                )
+            else:
+                # Use standard sync for other connector types
+                sync_result = await connector.sync(full_sync=full_sync)
             
             # Update connector last sync info
             await self._update_connector_sync_status(
@@ -389,7 +413,8 @@ class ConnectorService:
             ConnectorType.GITHUB: "Import repositories, issues, pull requests, and documentation from GitHub",
             ConnectorType.CONFLUENCE: "Import wiki pages, spaces, and documentation from Atlassian Confluence",
             ConnectorType.SLACK: "Import conversations, channels, and shared files from Slack",
-            ConnectorType.GOOGLE_DRIVE: "Import documents, folders, and shared content from Google Drive"
+            ConnectorType.GOOGLE_DRIVE: "Import documents, folders, and shared content from Google Drive",
+            ConnectorType.WEB_SCRAPER: "Web scraper connector"
         }
         return descriptions.get(connector_type, "Data source connector")
     
@@ -400,17 +425,49 @@ class ConnectorService:
             ConnectorType.GITHUB: ["oauth", "api_key"],
             ConnectorType.CONFLUENCE: ["oauth", "api_key"],
             ConnectorType.SLACK: ["oauth"],
-            ConnectorType.GOOGLE_DRIVE: ["oauth"]
+            ConnectorType.GOOGLE_DRIVE: ["oauth"],
+            ConnectorType.WEB_SCRAPER: ["api_key"]
         }
         return auth_types.get(connector_type, ["api_key"])
     
     def _get_connector_capabilities(self, connector_type: ConnectorType) -> Dict[str, bool]:
-        """Get capabilities for a connector type"""
-        return {
-            "incremental_sync": True,
-            "full_sync": True,
-            "real_time": False,  # Future enhancement
-            "field_mapping": True,
-            "filtering": True,
-            "rate_limiting": True
-        } 
+        """Get connector capabilities"""
+        capabilities = {
+            ConnectorType.JIRA: {
+                "incremental_sync": True,
+                "real_time_updates": False,
+                "bulk_operations": True,
+                "file_attachments": True
+            },
+            ConnectorType.GITHUB: {
+                "incremental_sync": True,
+                "real_time_updates": True,
+                "bulk_operations": True,
+                "file_attachments": True
+            },
+            ConnectorType.CONFLUENCE: {
+                "incremental_sync": True,
+                "real_time_updates": False,
+                "bulk_operations": True,
+                "file_attachments": True
+            },
+            ConnectorType.SLACK: {
+                "incremental_sync": True,
+                "real_time_updates": True,
+                "bulk_operations": True,
+                "file_attachments": True
+            },
+            ConnectorType.GOOGLE_DRIVE: {
+                "incremental_sync": True,
+                "real_time_updates": False,
+                "bulk_operations": True,
+                "file_attachments": True
+            },
+            ConnectorType.WEB_SCRAPER: {
+                "incremental_sync": True,
+                "real_time_updates": False,
+                "bulk_operations": True,
+                "file_attachments": False
+            }
+        }
+        return capabilities.get(connector_type, {}) 

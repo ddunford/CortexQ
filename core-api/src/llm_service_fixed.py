@@ -118,9 +118,8 @@ class LLMService:
             if response.status_code == 200:
                 result = response.json()
                 raw_response = result.get("response", "").strip()
-                # Post-process to ensure clean, professional formatting
-                cleaned_response = self._clean_llm_response(raw_response)
-                return self._enhance_citations(cleaned_response, sources)
+                # Post-process to ensure proper citation formatting
+                return self._enhance_citations(raw_response, sources)
             else:
                 logger.error(f"Ollama API error: {response.status_code}")
                 return self._fallback_response(query, context, sources)
@@ -130,105 +129,60 @@ class LLMService:
             return self._fallback_response(query, context, sources)
     
     def _create_concise_prompt(self, query: str, context: str, sources: List[Dict], intent: str) -> str:
-        """Create a clean, focused prompt that produces better responses"""
+        """Create a focused prompt for concise responses with clickable citations"""
         
-        # Build clean context from sources without metadata
-        clean_context = ""
-        if sources and context.strip():
-            # Remove metadata artifacts and clean up the context
-            cleaned_text = self._clean_context_text(context)
-            if cleaned_text:
-                clean_context = f"\n\nRelevant Information:\n{cleaned_text}"
+        # Source information for context with numbered citation format
+        source_context = ""
+        citation_guide = ""
+        if sources:
+            source_context = "\n\nAvailable sources for reference:\n"
+            citation_guide = "\n\nCITATION FORMAT - Use numbered citations that will be clickable:\n"
+            
+            for i, source in enumerate(sources[:3], 1):
+                title = source['title']
+                citation_id = source.get('citation_id', f'cite_{i}')
+                
+                source_context += f"[{i}] {title}\n"
+                # Use full content for better understanding
+                content = source.get('full_content', source.get('excerpt', source.get('preview', '')))
+                if len(content) > 500:
+                    content = content[:500] + "..."
+                source_context += f"    {content}\n\n"
+                
+                # Provide numbered citation format
+                citation_guide += f"- To reference source {i} ({title}): use '[{i}]' at the end of relevant sentences\n"
         
-        # Create the clean prompt
-        prompt = f"""You are a helpful assistant for Tribepad ATS software.
+        # Intent-specific instructions for more focused responses
+        intent_instructions = {
+            "bug_report": "Provide a clear analysis of the issue, root cause if identifiable, and step-by-step troubleshooting guidance.",
+            "feature_request": "Give a direct response about the request status, any existing alternatives, and next steps.",
+            "training": "Provide clear, step-by-step instructions and actionable guidance.",
+            "general_query": "Give a direct, helpful answer that addresses the specific question asked."
+        }
+        
+        instruction = intent_instructions.get(intent, intent_instructions["general_query"])
+        
+        prompt = f"""You are a helpful AI assistant providing accurate, direct responses to user questions. {instruction}
 
-Question: {query}
-{clean_context}
+User Question: {query}
 
-Instructions:
-- Answer the question directly and concisely
-- Use clear, step-by-step instructions when appropriate
-- Only include information that directly answers the question
-- If you reference sources, use simple numbered citations like [1] or [2]
-- Do NOT include:
-  * Document titles or metadata
-  * Confidence scores or percentages
-  * Raw search result formatting
-  * Technical reference codes
-- Write in a professional, helpful tone
+Context Information:
+{context}
+{source_context}{citation_guide}
 
-Answer:"""
+CRITICAL INSTRUCTIONS:
+- Answer the SPECIFIC question asked - if they ask "how to create" something, focus on creation steps, not cloning or templates
+- Be direct and helpful - avoid talking about alternatives unless the user specifically asks
+- Provide clear, actionable steps when explaining processes
+- Use numbered citations [1], [2], [3] that correspond to the sources listed above
+- Place citations at the end of sentences where you reference specific information
+- Keep your response focused and concise (3-5 sentences maximum)
+- Use a professional, conversational tone
+- If the available information doesn't directly answer their question, say so clearly
+
+Response:"""
         
         return prompt
-    
-    def _clean_context_text(self, context: str) -> str:
-        """Clean up context text to remove search metadata and artifacts"""
-        import re
-        
-        # Remove confidence scores and percentages
-        context = re.sub(r'\d+%\s*confidence', '', context)
-        
-        # Remove document title patterns (lines that look like titles)
-        lines = context.split('\n')
-        cleaned_lines = []
-        
-        for line in lines:
-            line = line.strip()
-            
-            # Skip lines that look like document titles or metadata
-            if (not line or 
-                line.endswith('Learn about the various triggers for') or
-                line.startswith('Internal Candidates') or
-                line.startswith('ATS - Training Guidance') or
-                re.match(r'^[A-Z][a-z\s-]+[A-Z][a-z\s-]+$', line) or  # Title case patterns
-                re.match(r'^\[?\d+\]?\s*$', line) or  # Just numbers/references
-                len(line) < 10):  # Very short lines (likely metadata)
-                continue
-                
-            # Clean up reference numbers and brackets
-            line = re.sub(r'\s*\[\d+\]\s*', ' ', line)
-            line = re.sub(r'\s+', ' ', line)  # Multiple spaces to single
-            
-            if line and len(line) > 15:  # Only keep substantial lines
-                cleaned_lines.append(line)
-        
-        return ' '.join(cleaned_lines).strip()
-    
-    def _clean_llm_response(self, response: str) -> str:
-        """Clean up the LLM response to remove any remaining artifacts"""
-        import re
-        
-        # Remove any remaining confidence scores or metadata
-        response = re.sub(r'\d+%\s*confidence', '', response)
-        response = re.sub(r'confidence\s*[:=]\s*\d+%?', '', response, flags=re.IGNORECASE)
-        
-        # Remove document titles that may have leaked through
-        response = re.sub(r'Internal Candidates.*?\.\.\.', '', response)
-        response = re.sub(r'ATS - Training Guidance.*?\.\.\.', '', response)
-        
-        # Remove standalone reference numbers or brackets
-        response = re.sub(r'\n\s*\[\d+\]\s*\n', '\n', response)
-        response = re.sub(r'^\s*\[\d+\]\s*', '', response, flags=re.MULTILINE)
-        
-        # Clean up excessive whitespace
-        response = re.sub(r'\n\s*\n\s*\n', '\n\n', response)  # Max 2 consecutive newlines
-        response = re.sub(r'[ \t]+', ' ', response)  # Multiple spaces to single
-        
-        # Remove any trailing/leading metadata artifacts
-        lines = response.split('\n')
-        cleaned_lines = []
-        
-        for line in lines:
-            line = line.strip()
-            # Skip obviously broken metadata lines
-            if (line and 
-                not re.match(r'^[A-Z][a-z\s-]+[A-Z][a-z\s-]+$', line) and  # Title patterns
-                not re.match(r'^\d+%.*confidence', line) and  # Confidence lines
-                len(line) > 3):  # Very short fragments
-                cleaned_lines.append(line)
-        
-        return '\n'.join(cleaned_lines).strip()
     
     def _enhance_citations(self, response: str, sources: List[Dict]) -> str:
         """Enhance response with numbered citations linked to source citation_ids"""

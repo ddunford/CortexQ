@@ -11,6 +11,7 @@ from typing import Optional, Dict, Any
 import logging
 import os
 from pathlib import Path
+import json
 
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -60,6 +61,15 @@ class FileProcessor:
         except ImportError as e:
             logger.warning(f"Could not import embeddings service: {e}")
             self.embeddings_service = None
+        
+        # Initialize visual content extractor
+        try:
+            from ingestion.visual_extractor import VisualContentExtractor
+            self.visual_extractor = VisualContentExtractor()
+            logger.info("Visual content extractor initialized")
+        except ImportError as e:
+            logger.warning(f"Could not import visual extractor: {e}")
+            self.visual_extractor = None
         
     def extract_text_from_file(self, file_path: str, content_type: str, content: bytes) -> str:
         """Extract text from different file types"""
@@ -202,18 +212,41 @@ class FileProcessor:
                 file_content
             )
             
+            # Extract visual content (images, screenshots)
+            visual_content = {}
+            if self.visual_extractor:
+                try:
+                    visual_content = self.visual_extractor.extract_visual_content(
+                        file_content, 
+                        file_result.content_type, 
+                        file_result.original_filename
+                    )
+                    logger.info(f"Extracted {len(visual_content.get('images', []))} images and {len(visual_content.get('screenshots', []))} screenshots from {file_result.original_filename}")
+                except Exception as e:
+                    logger.warning(f"Failed to extract visual content from {file_result.original_filename}: {e}")
+                    visual_content = {"images": [], "screenshots": [], "has_visual_content": False}
+            
             if not text_content.strip():
+                # Update metadata even if no text content
+                updated_metadata = {
+                    **(json.loads(file_result.metadata) if file_result.metadata else {}),
+                    "visual_content": visual_content,
+                    "processing_completed_at": datetime.utcnow().isoformat()
+                }
+                
                 logger.warning(f"No text content extracted from {file_result.original_filename}")
                 # Still mark as processed to avoid infinite retries
                 db.execute(
                     text("""
                         UPDATE files 
                         SET processed = true, processing_status = 'completed', 
-                            processing_error = 'No text content extracted', updated_at = :updated_at
+                            processing_error = 'No text content extracted', 
+                            metadata = :metadata, updated_at = :updated_at
                         WHERE id = :file_id
                     """),
                     {
                         "file_id": file_id,
+                        "metadata": json.dumps(updated_metadata),
                         "updated_at": datetime.utcnow()
                     }
                 )
@@ -224,55 +257,103 @@ class FileProcessor:
             chunks = self.chunk_text(text_content)
             logger.info(f"Created {len(chunks)} chunks from {file_result.original_filename}")
             
-            # Generate embeddings for each chunk with organization isolation
+            # Generate embeddings for each chunk
+            embedding_records = []
             for i, chunk in enumerate(chunks):
                 try:
-                    # Generate real embedding using the embeddings service
                     if self.embeddings_service and self.embeddings_service.is_available():
-                        embedding = await self.embeddings_service.encode_async(chunk)
-                        logger.info(f"Generated real embedding for chunk {i} of file {file_result.original_filename} (dimension: {len(embedding)})")
+                        embedding = self.embeddings_service.generate_embedding(chunk)
+                        if embedding is not None:
+                            # Enhanced metadata including visual content for relevant chunks
+                            chunk_metadata = {
+                                "title": file_result.original_filename,
+                                "content_type": file_result.content_type,
+                                "chunk_index": i,
+                                "chunk_size": len(chunk),
+                                "word_count": len(chunk.split()),
+                                "domain": file_result.domain,
+                                "organization_id": str(file_result.organization_id),
+                                "uploaded_by": str(file_result.uploaded_by),
+                                "file_size": file_result.size_bytes,
+                                "upload_date": file_result.created_at.isoformat()
+                            }
+                            
+                            # Add visual content info if available
+                            if visual_content.get("has_visual_content"):
+                                chunk_metadata.update({
+                                    "has_images": len(visual_content.get("images", [])) > 0,
+                                    "has_screenshots": len(visual_content.get("screenshots", [])) > 0,
+                                    "image_count": len(visual_content.get("images", [])),
+                                    "screenshot_count": len(visual_content.get("screenshots", [])),
+                                    "visual_content_summary": f"{len(visual_content.get('images', []))} images, {len(visual_content.get('screenshots', []))} screenshots"
+                                })
+                                
+                                # For the first chunk, include actual visual content for search results
+                                if i == 0:
+                                    chunk_metadata["images"] = visual_content.get("images", [])
+                                    chunk_metadata["screenshots"] = visual_content.get("screenshots", [])
+                            
+                            embedding_records.append({
+                                "embedding": embedding.tolist(),
+                                "content_text": chunk,
+                                "metadata": chunk_metadata
+                            })
                     else:
-                        logger.warning("Embeddings service not available, using mock embedding")
-                        embedding = [0.1] * 384  # Mock 384-dimensional embedding
+                        logger.warning(f"Embeddings service not available for chunk {i}")
                     
-                    # Store embedding with organization and domain context
+                except Exception as e:
+                    logger.error(f"Failed to generate embedding for chunk {i}: {e}")
+                    continue
+            
+            # Store embeddings in the database
+            for record in embedding_records:
+                try:
                     embedding_id = str(uuid.uuid4())
                     db.execute(
                         text("""
                             INSERT INTO embeddings (
-                                id, source_id, source_type, domain_id, organization_id, chunk_index,
+                                id, source_id, domain_id, organization_id, chunk_index, 
                                 content_text, embedding, created_at
                             ) VALUES (
-                                :id, :source_id, :source_type, :domain_id, :organization_id, :chunk_index,
+                                :id, :source_id, :domain_id, :organization_id, :chunk_index,
                                 :content_text, :embedding, :created_at
                             )
                         """),
                         {
                             "id": embedding_id,
                             "source_id": file_id,
-                            "source_type": "file",
                             "domain_id": file_result.domain_id,
                             "organization_id": file_result.organization_id,
-                            "chunk_index": i,
-                            "content_text": chunk,
-                            "embedding": embedding,
+                            "chunk_index": record["metadata"]["chunk_index"],
+                            "content_text": record["content_text"],
+                            "embedding": json.dumps(record["embedding"]),
                             "created_at": datetime.utcnow()
                         }
                     )
-                    
                 except Exception as e:
-                    logger.error(f"Error processing chunk {i} for file {file_id}: {e}")
-                    continue
+                    logger.error(f"Error storing embedding: {e}")
             
-            # Update file status
+            # Update file status and metadata with visual content
+            final_metadata = {
+                **(json.loads(file_result.metadata) if file_result.metadata else {}),
+                "processing_completed_at": datetime.utcnow().isoformat(),
+                "chunks_created": len(chunks),
+                "embeddings_created": len(embedding_records),
+                "visual_content": visual_content,
+                "text_length": len(text_content),
+                "word_count": len(text_content.split())
+            }
+            
             db.execute(
                 text("""
                     UPDATE files 
-                    SET processed = true, processing_status = 'completed', updated_at = :updated_at
+                    SET processed = true, processing_status = 'completed', 
+                        metadata = :metadata, updated_at = :updated_at
                     WHERE id = :file_id
                 """),
                 {
                     "file_id": file_id,
+                    "metadata": json.dumps(final_metadata),
                     "updated_at": datetime.utcnow()
                 }
             )

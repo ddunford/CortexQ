@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X, ExternalLink, FileText, Book } from 'lucide-react';
+import { api } from '../../utils/api';
 
 interface Citation {
   citationId: string;
@@ -55,26 +56,35 @@ const SourceModal: React.FC<SourceModalProps> = ({ source, isOpen, onClose }) =>
     if (domain.toLowerCase().includes('help') || domain.toLowerCase().includes('support')) {
       return { icon: Book, label: 'Help Article' };
     }
+    // Check if it's a web page
+    if (source.url) {
+      return { icon: ExternalLink, label: 'Web Page' };
+    }
     return { icon: FileText, label: 'Document' };
   };
 
   const loadFullDocument = async () => {
     setLoadingFullContent(true);
     try {
-      const response = await fetch(`http://localhost:8001/sources/${source.id}/content?chunk_index=${source.chunk_index}`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
-        },
+      const response = await api.request<{ content: string; full_content?: string }>(`/sources/${source.id}/content?chunk_index=${source.chunk_index}`, {
+        method: 'GET',
       });
       
-      if (response.ok) {
-        const data = await response.json();
-        setFullDocumentContent(data.content || data.full_content);
+      if (response.success && response.data) {
+        setFullDocumentContent(response.data.content || response.data.full_content || '');
+      } else {
+        console.error('Failed to load full document content:', response.message);
       }
     } catch (error) {
       console.error('Failed to load full document content:', error);
     } finally {
       setLoadingFullContent(false);
+    }
+  };
+
+  const openSourceUrl = () => {
+    if (source.url) {
+      window.open(source.url, '_blank', 'noopener,noreferrer');
     }
   };
 
@@ -91,7 +101,18 @@ const SourceModal: React.FC<SourceModalProps> = ({ source, isOpen, onClose }) =>
               <DocIcon className="h-6 w-6 text-blue-600" />
             </div>
             <div>
-              <h3 className="text-xl font-semibold text-gray-900">{cleanTitle}</h3>
+              <div className="flex items-center space-x-2">
+                <h3 className="text-xl font-semibold text-gray-900">{cleanTitle}</h3>
+                {source.url && (
+                  <button
+                    onClick={openSourceUrl}
+                    className="text-blue-600 hover:text-blue-800 transition-colors"
+                    title={`Open ${source.url}`}
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
               <div className="flex items-center space-x-4 text-sm text-gray-500 mt-1">
                 <span className="flex items-center space-x-1">
                   <span className="w-2 h-2 bg-green-500 rounded-full"></span>
@@ -101,6 +122,20 @@ const SourceModal: React.FC<SourceModalProps> = ({ source, isOpen, onClose }) =>
                 <span>{docType.label}</span>
                 <span>•</span>
                 <span>{source.domain} domain</span>
+                {source.url && (
+                  <>
+                    <span>•</span>
+                    <a 
+                      href={source.url} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="text-blue-600 hover:text-blue-800 hover:underline max-w-xs truncate"
+                      title={source.url}
+                    >
+                      {source.url}
+                    </a>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -133,13 +168,24 @@ const SourceModal: React.FC<SourceModalProps> = ({ source, isOpen, onClose }) =>
                     <FileText className="h-4 w-4" />
                     <span>Full Context</span>
                   </h4>
-                  <button
-                    onClick={loadFullDocument}
-                    disabled={loadingFullContent}
-                    className="text-sm text-blue-600 hover:text-blue-800 font-medium px-3 py-1 rounded-md hover:bg-blue-50 transition-colors"
-                  >
-                    {loadingFullContent ? 'Loading...' : 'View Complete Document'}
-                  </button>
+                  <div className="flex space-x-2">
+                    {source.url && (
+                      <button
+                        onClick={openSourceUrl}
+                        className="text-sm text-green-600 hover:text-green-800 font-medium px-3 py-1 rounded-md hover:bg-green-50 transition-colors flex items-center space-x-1"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        <span>View Original</span>
+                      </button>
+                    )}
+                    <button
+                      onClick={loadFullDocument}
+                      disabled={loadingFullContent}
+                      className="text-sm text-blue-600 hover:text-blue-800 font-medium px-3 py-1 rounded-md hover:bg-blue-50 transition-colors"
+                    >
+                      {loadingFullContent ? 'Loading...' : 'View Complete Document'}
+                    </button>
+                  </div>
                 </div>
                 
                 <div className="bg-white border border-gray-200 rounded-lg p-4 max-h-96 overflow-y-auto">
@@ -158,29 +204,31 @@ const SourceModal: React.FC<SourceModalProps> = ({ source, isOpen, onClose }) =>
               </div>
             )}
             
-            <div className="flex items-center justify-between pt-4 border-t border-gray-200">
-              <div className="text-sm text-gray-500">
-                <span>Source: {cleanTitle}</span>
-                {source.word_count && <span> • {source.word_count} words</span>}
-              </div>
-              <div className="flex items-center space-x-3">
+            {/* Source metadata section */}
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+              <h4 className="font-semibold text-gray-900 mb-2">Source Information</h4>
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span className="text-gray-500">Content Length:</span>
+                  <span className="ml-2 text-gray-900">{source.word_count} words</span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Match Quality:</span>
+                  <span className="ml-2 text-gray-900">{source.confidence_score}</span>
+                </div>
                 {source.url && (
-                  <a
-                    href={source.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center space-x-2 text-blue-600 hover:text-blue-800 text-sm font-medium px-3 py-1 rounded-md hover:bg-blue-50 transition-colors"
-                  >
-                    <ExternalLink className="h-4 w-4" />
-                    <span>Open Original</span>
-                  </a>
+                  <div className="col-span-2">
+                    <span className="text-gray-500">Source URL:</span>
+                    <a 
+                      href={source.url} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="ml-2 text-blue-600 hover:text-blue-800 hover:underline break-all"
+                    >
+                      {source.url}
+                    </a>
+                  </div>
                 )}
-                <button
-                  onClick={onClose}
-                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-md transition-colors"
-                >
-                  Close
-                </button>
               </div>
             </div>
           </div>
@@ -240,7 +288,7 @@ const CitationText: React.FC<CitationTextProps> = ({ content, sources = [], clas
 
   return (
     <>
-      <span className={className}>
+      <div className={`${className} whitespace-pre-wrap`}>
         {parts.map((part, index) => {
           if (typeof part === 'string') {
             return <span key={index}>{part}</span>;
@@ -273,7 +321,7 @@ const CitationText: React.FC<CitationTextProps> = ({ content, sources = [], clas
             );
           }
         })}
-      </span>
+      </div>
       
       {selectedSource && (
         <SourceModal

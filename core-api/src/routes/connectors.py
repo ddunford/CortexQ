@@ -208,7 +208,7 @@ async def create_connector(
             "id": connector_id,
             "org_id": organization_id,
             "domain_id": domain_id,  # Use the domain_id from URL path
-            "connector_type": connector_data.connector_type.value,
+            "connector_type": connector_data.connector_type.value if hasattr(connector_data.connector_type, 'value') else str(connector_data.connector_type),
             "name": connector_data.name,
             "auth_config": json.dumps(connector_data.auth_config if connector_data.auth_config else {}),
             "sync_config": json.dumps(connector_data.sync_config.dict() if connector_data.sync_config else {}),
@@ -229,17 +229,24 @@ async def create_connector(
         {"id": connector_id}
     ).fetchone()
     
+    # Safe connector type conversion
+    try:
+        connector_type_enum = ConnectorType(connector.connector_type)
+    except ValueError:
+        # Fallback for unknown connector types
+        connector_type_enum = connector.connector_type
+    
     return ConnectorResponse(
         id=str(connector.id),
         name=connector.name,
-        connector_type=ConnectorType(connector.connector_type),
+        connector_type=connector_type_enum,
         domain=connector.domain_name,
         organization_id=str(connector.organization_id),
         status=ConnectorStatus.PENDING,  # Default status since no status column exists
         is_enabled=connector.is_enabled,
-        auth_config=connector.auth_config,
-        sync_config=connector.sync_config,
-        mapping_config=connector.mapping_config,
+        auth_config=json.loads(connector.auth_config) if isinstance(connector.auth_config, str) else connector.auth_config,
+        sync_config=json.loads(connector.sync_config) if isinstance(connector.sync_config, str) else connector.sync_config,
+        mapping_config=json.loads(connector.mapping_config) if isinstance(connector.mapping_config, str) else connector.mapping_config,
         last_sync_at=connector.last_sync_at,
         last_sync_status=connector.last_sync_status,
         sync_error_message=connector.sync_error_message,
@@ -286,17 +293,69 @@ async def get_connector(
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
     
+    # Handle configuration parsing with defaults
+    auth_config = None
+    sync_config = None
+    mapping_config = None
+    
+    # Parse auth_config with defaults for web scraper
+    if connector.auth_config:
+        if isinstance(connector.auth_config, str):
+            auth_config = json.loads(connector.auth_config)
+        else:
+            auth_config = connector.auth_config
+    elif connector.connector_type == 'web_scraper':
+        # Provide default web scraper configuration
+        auth_config = {
+            "start_urls": "",
+            "max_depth": 2,
+            "max_pages": 100,
+            "delay_ms": 1000,
+            "respect_robots": True,
+            "follow_external": False,
+            "include_patterns": [],
+            "exclude_patterns": [],
+            "custom_user_agent": "CortexQ-Bot/1.0",
+            "quality_threshold": 0.3,
+            "max_file_size": 5242880
+        }
+    
+    # Parse sync_config with defaults
+    if connector.sync_config:
+        if isinstance(connector.sync_config, str):
+            sync_config = json.loads(connector.sync_config)
+        else:
+            sync_config = connector.sync_config
+    else:
+        sync_config = {}
+    
+    # Parse mapping_config with defaults
+    if connector.mapping_config:
+        if isinstance(connector.mapping_config, str):
+            mapping_config = json.loads(connector.mapping_config)
+        else:
+            mapping_config = connector.mapping_config
+    else:
+        mapping_config = {}
+
+    # Safe connector type conversion
+    try:
+        connector_type_enum = ConnectorType(connector.connector_type)
+    except ValueError:
+        # Fallback for unknown connector types
+        connector_type_enum = connector.connector_type
+    
     return ConnectorResponse(
         id=str(connector.id),
         name=connector.name,
-        connector_type=ConnectorType(connector.connector_type),
+        connector_type=connector_type_enum,
         domain=connector.domain_name,
         organization_id=str(connector.organization_id),
         status=ConnectorStatus.PENDING,  # Default status since no status column exists
         is_enabled=connector.is_enabled,
-        auth_config=connector.auth_config,
-        sync_config=connector.sync_config,
-        mapping_config=connector.mapping_config,
+        auth_config=auth_config,
+        sync_config=sync_config,
+        mapping_config=mapping_config,
         last_sync_at=connector.last_sync_at,
         last_sync_status=connector.last_sync_status,
         sync_error_message=connector.sync_error_message,
@@ -611,15 +670,16 @@ async def get_sync_jobs(
         SyncJobResponse(
             id=str(job.id),
             connector_id=str(job.connector_id),
+            organization_id=str(job.organization_id),
             status=SyncStatus(job.status),
             started_at=job.started_at,
             completed_at=job.completed_at,
-            records_processed=job.records_processed,
-            records_created=job.records_created,
-            records_updated=job.records_updated,
+            records_processed=job.records_processed or 0,
+            records_created=job.records_created or 0,
+            records_updated=job.records_updated or 0,
             error_message=job.error_message,
             metadata=job.metadata,
-            created_at=job.created_at
+            created_at=job.created_at or job.started_at or datetime.utcnow()
         )
         for job in sync_jobs
     ]
@@ -680,7 +740,7 @@ async def get_sync_job(
         records_updated=sync_job.records_updated or 0,
         error_message=sync_job.error_message,
         metadata=sync_job.metadata,
-        created_at=sync_job.created_at
+        created_at=sync_job.created_at or sync_job.started_at or datetime.utcnow()
     )
 
 
@@ -816,15 +876,16 @@ async def get_sync_jobs(
         SyncJobResponse(
             id=str(job.id),
             connector_id=str(job.connector_id),
+            organization_id=str(job.organization_id),
             status=SyncStatus(job.status),
             started_at=job.started_at,
             completed_at=job.completed_at,
-            records_processed=job.records_processed,
-            records_created=job.records_created,
-            records_updated=job.records_updated,
+            records_processed=job.records_processed or 0,
+            records_created=job.records_created or 0,
+            records_updated=job.records_updated or 0,
             error_message=job.error_message,
             metadata=job.metadata,
-            created_at=job.created_at
+            created_at=job.created_at or job.started_at or datetime.utcnow()
         )
         for job in sync_jobs
     ]
@@ -885,7 +946,7 @@ async def get_sync_job(
         records_updated=sync_job.records_updated or 0,
         error_message=sync_job.error_message,
         metadata=sync_job.metadata,
-        created_at=sync_job.created_at
+        created_at=sync_job.created_at or sync_job.started_at or datetime.utcnow()
     )
 
 
@@ -974,7 +1035,7 @@ async def preview_web_scraper(
     db: Session = Depends(get_db),
     current_user: dict = Depends(require_permission("connectors:read"))
 ):
-    """Preview what URLs would be crawled by the web scraper without actually crawling them"""
+    """Preview what a web scraper would crawl before actually crawling"""
     # Get user's organization
     org_result = db.execute(
         text("""
@@ -994,10 +1055,11 @@ async def preview_web_scraper(
     # Get connector
     connector = db.execute(
         text("""
-            SELECT c.*, od.domain_name as domain_name
+            SELECT c.*, od.name as domain_name
             FROM connectors c
-            JOIN organization_domains od ON c.domain_id = od.id
-            WHERE c.id = :connector_id AND c.organization_id = :org_id
+            JOIN organization_domains od ON c.organization_id = od.organization_id 
+            WHERE c.id = :connector_id 
+            AND c.organization_id = :org_id
         """),
         {"connector_id": connector_id, "org_id": organization_id}
     ).fetchone()
@@ -1005,560 +1067,11 @@ async def preview_web_scraper(
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
     
-    if connector.connector_type != "web_scraper":
-        raise HTTPException(status_code=400, detail="This endpoint is only for web scraper connectors")
+    if connector.connector_type != 'web_scraper':
+        raise HTTPException(status_code=400, detail="This endpoint is only for web scrapers")
     
     try:
-        from connectors.web_scraper_connector import WebScraperConnector
-        from services.base_connector import ConnectorConfig
-        
-        # Create connector config
-        config = ConnectorConfig(
-            id=str(connector.id),
-            name=connector.name,
-            connector_type=connector.connector_type,
-            organization_id=organization_id,
-            domain=connector.domain_name,
-            auth_config=connector.auth_config,
-            sync_config=connector.sync_config,
-            mapping_config=connector.mapping_config,
-            is_enabled=connector.is_enabled
-        )
-        
-        # Create connector instance and get preview
-        scraper = WebScraperConnector(config)
-        preview = await scraper.preview_crawl()
-        
-        return {
-            "preview": {
-                "discovered_urls": preview.discovered_urls,
-                "allowed_urls": preview.allowed_urls,
-                "blocked_urls": preview.blocked_urls,
-                "robots_blocked": preview.robots_blocked,
-                "external_urls": preview.external_urls,
-                "estimated_pages": preview.estimated_pages,
-                "estimated_duration": preview.estimated_duration
-            },
-            "summary": {
-                "total_discovered": len(preview.discovered_urls),
-                "total_allowed": len(preview.allowed_urls),
-                "total_blocked": len(preview.blocked_urls),
-                "robots_blocked": len(preview.robots_blocked),
-                "external_urls": len(preview.external_urls)
-            }
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Preview failed: {str(e)}")
-
-
-@router.post("/{connector_id}/test-config", response_model=Dict[str, Any])
-async def test_web_scraper_config(
-    domain_id: str,
-    connector_id: str,
-    config_data: Dict[str, Any],
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(require_permission("connectors:write"))
-):
-    """Test web scraper configuration without saving"""
-    # Get user's organization
-    org_result = db.execute(
-        text("""
-            SELECT om.organization_id
-            FROM organization_members om
-            WHERE om.user_id = :user_id AND om.is_active = true
-            LIMIT 1
-        """),
-        {"user_id": current_user["id"]}
-    ).fetchone()
-    
-    if not org_result:
-        raise HTTPException(status_code=403, detail="User not associated with any organization")
-    
-    organization_id = str(org_result.organization_id)
-    
-    try:
-        from connectors.web_scraper_connector import WebScraperConnector
-        from services.base_connector import ConnectorConfig
-        
-        # Create temporary connector config for testing
-        config = ConnectorConfig(
-            id="test",
-            name="Test Configuration",
-            connector_type="web_scraper",
-            organization_id=organization_id,
-            domain=domain_id,
-            auth_config=config_data,
-            sync_config={},
-            mapping_config={},
-            is_enabled=True
-        )
-        
-        # Test the configuration
-        scraper = WebScraperConnector(config)
-        success, result = await scraper.test_connection()
-        
-        return {
-            "success": success,
-            "result": result,
-            "configuration_valid": success
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Configuration test failed: {str(e)}")
-
-
-@router.get("/{connector_id}/crawl-stats", response_model=Dict[str, Any])
-async def get_web_scraper_stats(
-    domain_id: str,
-    connector_id: str,
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(require_permission("connectors:read"))
-):
-    """Get detailed crawl statistics for web scraper"""
-    # Get user's organization
-    org_result = db.execute(
-        text("""
-            SELECT om.organization_id
-            FROM organization_members om
-            WHERE om.user_id = :user_id AND om.is_active = true
-            LIMIT 1
-        """),
-        {"user_id": current_user["id"]}
-    ).fetchone()
-    
-    if not org_result:
-        raise HTTPException(status_code=403, detail="User not associated with any organization")
-    
-    organization_id = str(org_result.organization_id)
-    
-    # Get connector
-    connector = db.execute(
-        text("""
-            SELECT c.*, od.domain_name as domain_name
-            FROM connectors c
-            JOIN organization_domains od ON c.domain_id = od.id
-            WHERE c.id = :connector_id AND c.organization_id = :org_id
-        """),
-        {"connector_id": connector_id, "org_id": organization_id}
-    ).fetchone()
-    
-    if not connector:
-        raise HTTPException(status_code=404, detail="Connector not found")
-    
-    if connector.connector_type != "web_scraper":
-        raise HTTPException(status_code=400, detail="This endpoint is only for web scraper connectors")
-    
-    try:
-        # Get crawl statistics from database
-        crawl_stats = db.execute(
-            text("""
-                SELECT 
-                    COUNT(*) as total_pages,
-                    COUNT(CASE WHEN status = 'success' THEN 1 END) as successful_crawls,
-                    COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_crawls,
-                    AVG(word_count) as avg_word_count,
-                    SUM(word_count) as total_words,
-                    MIN(last_crawled) as first_crawl,
-                    MAX(last_crawled) as last_crawl
-                FROM crawled_pages cp
-                JOIN connectors c ON cp.domain_id = c.domain_id
-                WHERE c.id = :connector_id AND cp.organization_id = :org_id
-            """),
-            {"connector_id": connector_id, "org_id": organization_id}
-        ).fetchone()
-        
-        # Get recent sync jobs
-        recent_syncs = db.execute(
-            text("""
-                SELECT * FROM sync_jobs 
-                WHERE connector_id = :connector_id AND organization_id = :org_id
-                ORDER BY created_at DESC 
-                LIMIT 10
-            """),
-            {"connector_id": connector_id, "org_id": organization_id}
-        ).fetchall()
-        
-        return {
-            "crawl_stats": {
-                "total_pages": crawl_stats.total_pages or 0,
-                "successful_crawls": crawl_stats.successful_crawls or 0,
-                "failed_crawls": crawl_stats.failed_crawls or 0,
-                "success_rate": (crawl_stats.successful_crawls or 0) / max(crawl_stats.total_pages or 1, 1) * 100,
-                "avg_word_count": float(crawl_stats.avg_word_count or 0),
-                "total_words": crawl_stats.total_words or 0,
-                "first_crawl": crawl_stats.first_crawl.isoformat() if crawl_stats.first_crawl else None,
-                "last_crawl": crawl_stats.last_crawl.isoformat() if crawl_stats.last_crawl else None
-            },
-            "recent_syncs": [
-                {
-                    "id": str(sync.id),
-                    "status": sync.status,
-                    "started_at": sync.started_at.isoformat() if sync.started_at else None,
-                    "completed_at": sync.completed_at.isoformat() if sync.completed_at else None,
-                    "records_processed": sync.records_processed,
-                    "error_message": sync.error_message
-                }
-                for sync in recent_syncs
-            ]
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get crawl stats: {str(e)}")
-
-
-@router.put("/{connector_id}/crawl-rules", response_model=Dict[str, Any])
-async def update_crawl_rules(
-    domain_id: str,
-    connector_id: str,
-    rules_data: Dict[str, Any],
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(require_permission("connectors:write"))
-):
-    """Update crawl rules for web scraper with validation"""
-    # Get user's organization
-    org_result = db.execute(
-        text("""
-            SELECT om.organization_id
-            FROM organization_members om
-            WHERE om.user_id = :user_id AND om.is_active = true
-            LIMIT 1
-        """),
-        {"user_id": current_user["id"]}
-    ).fetchone()
-    
-    if not org_result:
-        raise HTTPException(status_code=403, detail="User not associated with any organization")
-    
-    organization_id = str(org_result.organization_id)
-    
-    # Get connector
-    connector = db.execute(
-        text("""
-            SELECT c.*, od.domain_name as domain_name
-            FROM connectors c
-            JOIN organization_domains od ON c.domain_id = od.id
-            WHERE c.id = :connector_id AND c.organization_id = :org_id
-        """),
-        {"connector_id": connector_id, "org_id": organization_id}
-    ).fetchone()
-    
-    if not connector:
-        raise HTTPException(status_code=404, detail="Connector not found")
-    
-    if connector.connector_type != "web_scraper":
-        raise HTTPException(status_code=400, detail="This endpoint is only for web scraper connectors")
-    
-    try:
-        # Validate regex patterns
-        include_patterns = rules_data.get('include_patterns', [])
-        exclude_patterns = rules_data.get('exclude_patterns', [])
-        
-        for pattern in include_patterns + exclude_patterns:
-            try:
-                re.compile(pattern)
-            except re.error as e:
-                raise HTTPException(status_code=400, detail=f"Invalid regex pattern '{pattern}': {str(e)}")
-        
-        # Validate file size limit
-        max_file_size = rules_data.get('max_file_size', 5 * 1024 * 1024)
-        if max_file_size > 100 * 1024 * 1024:  # 100MB limit
-            raise HTTPException(status_code=400, detail="Maximum file size cannot exceed 100MB")
-        
-        # Update connector auth_config with new rules
-        current_auth_config = connector.auth_config or {}
-        updated_auth_config = {
-            **current_auth_config,
-            'include_patterns': include_patterns,
-            'exclude_patterns': exclude_patterns,
-            'follow_external': rules_data.get('follow_external', False),
-            'respect_robots': rules_data.get('respect_robots', True),
-            'max_file_size': max_file_size,
-            'custom_user_agent': rules_data.get('custom_user_agent', 'CortexQ-Bot/1.0'),
-            'crawl_frequency_hours': rules_data.get('crawl_frequency_hours', 24),
-            'content_filters': rules_data.get('content_filters', {
-                'min_word_count': 10,
-                'exclude_nav_elements': True,
-                'exclude_footer_elements': True,
-                'extract_metadata': True
-            })
-        }
-        
-        # Update database
-        db.execute(
-            text("""
-                UPDATE connectors 
-                SET auth_config = :auth_config, updated_at = CURRENT_TIMESTAMP
-                WHERE id = :connector_id AND organization_id = :org_id
-            """),
-            {
-                "auth_config": json.dumps(updated_auth_config),
-                "connector_id": connector_id,
-                "org_id": organization_id
-            }
-        )
-        db.commit()
-        
-        # Log the change
-        AuditLogger.log_event(
-            db, "connector_config_update", current_user["id"], "connectors", "update",
-            f"Updated crawl rules for connector {connector.name}",
-            {"connector_id": connector_id, "rules_updated": list(rules_data.keys())}
-        )
-        
-        return {
-            "success": True,
-            "message": "Crawl rules updated successfully",
-            "updated_rules": {
-                "include_patterns": include_patterns,
-                "exclude_patterns": exclude_patterns,
-                "follow_external": rules_data.get('follow_external', False),
-                "respect_robots": rules_data.get('respect_robots', True),
-                "max_file_size": max_file_size,
-                "custom_user_agent": updated_auth_config.get('custom_user_agent'),
-                "crawl_frequency_hours": updated_auth_config.get('crawl_frequency_hours')
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update crawl rules: {str(e)}")
-
-
-@router.get("/{connector_id}/crawled-pages", response_model=Dict[str, Any])
-async def get_crawled_pages(
-    domain_id: str,
-    connector_id: str,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    status_filter: Optional[str] = Query(None, regex="^(success|failed|skipped)$"),
-    search_query: Optional[str] = Query(None, min_length=1, max_length=255),
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(require_permission("connectors:read"))
-):
-    """Get paginated list of crawled pages with filtering and search"""
-    # Get user's organization
-    org_result = db.execute(
-        text("""
-            SELECT om.organization_id
-            FROM organization_members om
-            WHERE om.user_id = :user_id AND om.is_active = true
-            LIMIT 1
-        """),
-        {"user_id": current_user["id"]}
-    ).fetchone()
-    
-    if not org_result:
-        raise HTTPException(status_code=403, detail="User not associated with any organization")
-    
-    organization_id = str(org_result.organization_id)
-    
-    try:
-        # Build dynamic query - need to join with connectors to match connector_id to domain_id
-        where_conditions = ["c.id = :connector_id", "cp.organization_id = :org_id"]
-        query_params = {
-            "connector_id": connector_id,
-            "org_id": organization_id,
-            "offset": (page - 1) * page_size,
-            "limit": page_size
-        }
-        
-        if status_filter:
-            where_conditions.append("cp.status = :status_filter")
-            query_params["status_filter"] = status_filter
-        
-        if search_query:
-            where_conditions.append("(cp.title ILIKE :search OR cp.url ILIKE :search OR cp.content ILIKE :search)")
-            query_params["search"] = f"%{search_query}%"
-        
-        where_clause = " AND ".join(where_conditions)
-        
-        # Get total count
-        total_count = db.execute(
-            text(f"""
-                SELECT COUNT(*) as count
-                FROM crawled_pages cp
-                JOIN connectors c ON cp.domain_id = c.domain_id
-                WHERE {where_clause}
-            """),
-            query_params
-        ).fetchone().count
-        
-        # Get pages
-        pages = db.execute(
-            text(f"""
-                SELECT 
-                    cp.id, cp.url, cp.title, cp.status, cp.word_count, cp.content_hash,
-                    cp.last_crawled, cp.depth, cp.content_type, cp.file_size, cp.error_message,
-                    CASE 
-                        WHEN LENGTH(cp.content) > 200 THEN SUBSTRING(cp.content FROM 1 FOR 200) || '...'
-                        ELSE cp.content
-                    END as content_preview
-                FROM crawled_pages cp
-                JOIN connectors c ON cp.domain_id = c.domain_id
-                WHERE {where_clause}
-                ORDER BY cp.last_crawled DESC
-                OFFSET :offset LIMIT :limit
-            """),
-            query_params
-        ).fetchall()
-        
-        pages_data = [
-            {
-                "id": str(page.id),
-                "url": page.url,
-                "title": page.title,
-                "status": page.status,
-                "word_count": page.word_count,
-                "content_hash": page.content_hash,
-                "last_crawled": page.last_crawled.isoformat() if page.last_crawled else None,
-                "depth": page.depth,
-                "content_type": page.content_type,
-                "file_size": page.file_size,
-                "error_message": page.error_message,
-                "content_preview": page.content_preview
-            }
-            for page in pages
-        ]
-        
-        return {
-            "pages": pages_data,
-            "pagination": {
-                "current_page": page,
-                "page_size": page_size,
-                "total_pages": (total_count + page_size - 1) // page_size,
-                "total_count": total_count,
-                "has_next": page * page_size < total_count,
-                "has_previous": page > 1
-            },
-            "filters": {
-                "status_filter": status_filter,
-                "search_query": search_query
-            }
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve crawled pages: {str(e)}")
-
-
-@router.delete("/{connector_id}/crawled-pages/{page_id}")
-async def delete_crawled_page(
-    domain_id: str,
-    connector_id: str,
-    page_id: str,
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(require_permission("connectors:write"))
-):
-    """Delete a specific crawled page"""
-    # Get user's organization
-    org_result = db.execute(
-        text("""
-            SELECT om.organization_id
-            FROM organization_members om
-            WHERE om.user_id = :user_id AND om.is_active = true
-            LIMIT 1
-        """),
-        {"user_id": current_user["id"]}
-    ).fetchone()
-    
-    if not org_result:
-        raise HTTPException(status_code=403, detail="User not associated with any organization")
-    
-    organization_id = str(org_result.organization_id)
-    
-    try:
-        # Check if page exists and belongs to user's organization
-        page = db.execute(
-            text("""
-                SELECT cp.url FROM crawled_pages cp
-                JOIN connectors c ON cp.domain_id = c.domain_id
-                WHERE cp.id = :page_id AND c.id = :connector_id AND cp.organization_id = :org_id
-            """),
-            {
-                "page_id": page_id,
-                "connector_id": connector_id,
-                "org_id": organization_id
-            }
-        ).fetchone()
-        
-        if not page:
-            raise HTTPException(status_code=404, detail="Crawled page not found")
-        
-        # Delete the page
-        db.execute(
-            text("""
-                DELETE FROM crawled_pages 
-                WHERE id = :page_id AND domain_id = (
-                    SELECT domain_id FROM connectors WHERE id = :connector_id
-                ) AND organization_id = :org_id
-            """),
-            {
-                "page_id": page_id,
-                "connector_id": connector_id,
-                "org_id": organization_id
-            }
-        )
-        db.commit()
-        
-        # Log the deletion
-        AuditLogger.log_event(
-            db, "crawled_page_delete", current_user["id"], "crawled_pages", "delete",
-            f"Deleted crawled page: {page.url}",
-            {"page_id": page_id, "connector_id": connector_id}
-        )
-        
-        return {"success": True, "message": "Crawled page deleted successfully"}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete crawled page: {str(e)}")
-
-
-@router.post("/{connector_id}/schedule-crawl", response_model=Dict[str, Any])
-async def schedule_web_scraper_crawl(
-    domain_id: str,
-    connector_id: str,
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(require_permission("connectors:write"))
-):
-    """Schedule a crawl for web scraper connector"""
-    # Get user's organization
-    org_result = db.execute(
-        text("""
-            SELECT om.organization_id, od.domain_name
-            FROM organization_members om
-            JOIN organization_domains od ON om.organization_id = od.organization_id
-            WHERE om.user_id = :user_id AND om.is_active = true AND od.id = :domain_id
-            LIMIT 1
-        """),
-        {"user_id": current_user["id"], "domain_id": domain_id}
-    ).fetchone()
-    
-    if not org_result:
-        raise HTTPException(status_code=403, detail="User not associated with this domain")
-    
-    organization_id = str(org_result.organization_id)
-    domain_name = org_result.domain_name
-    
-    # Get connector
-    connector = db.execute(
-        text("""
-            SELECT * FROM connectors 
-            WHERE id = :connector_id AND organization_id = :org_id
-        """),
-        {"connector_id": connector_id, "org_id": organization_id}
-    ).fetchone()
-    
-    if not connector:
-        raise HTTPException(status_code=404, detail="Connector not found")
-    
-    if connector.connector_type != "web_scraper":
-        raise HTTPException(status_code=400, detail="This endpoint is only for web scraper connectors")
-    
-    try:
-        # Import and create connector instance
+        # Initialize web scraper
         from connectors.web_scraper_connector import WebScraperConnector
         from services.base_connector import ConnectorConfig
         
@@ -1860,10 +1373,10 @@ async def get_web_scraper_content_analytics(
     # Get connector
     connector = db.execute(
         text("""
-            SELECT c.*, od.domain_name as domain_name
+            SELECT c.*
             FROM connectors c
-            JOIN organization_domains od ON c.domain_id = od.id
-            WHERE c.id = :connector_id AND c.organization_id = :org_id
+            WHERE c.id = :connector_id 
+            AND c.organization_id = :org_id
         """),
         {"connector_id": connector_id, "org_id": organization_id}
     ).fetchone()
@@ -1932,10 +1445,10 @@ async def get_crawl_session_status(
     # Get connector
     connector = db.execute(
         text("""
-            SELECT c.*, od.domain_name as domain_name
+            SELECT c.*
             FROM connectors c
-            JOIN organization_domains od ON c.domain_id = od.id
-            WHERE c.id = :connector_id AND c.organization_id = :org_id
+            WHERE c.id = :connector_id 
+            AND c.organization_id = :org_id
         """),
         {"connector_id": connector_id, "org_id": organization_id}
     ).fetchone()
@@ -2012,10 +1525,10 @@ async def start_intelligent_crawl(
     # Get connector
     connector = db.execute(
         text("""
-            SELECT c.*, od.domain_name as domain_name
+            SELECT c.*
             FROM connectors c
-            JOIN organization_domains od ON c.domain_id = od.id
-            WHERE c.id = :connector_id AND c.organization_id = :org_id
+            WHERE c.id = :connector_id 
+            AND c.organization_id = :org_id
         """),
         {"connector_id": connector_id, "org_id": organization_id}
     ).fetchone()
@@ -2252,7 +1765,8 @@ async def update_enhanced_web_scraper_config(
         text("""
             SELECT c.*
             FROM connectors c
-            WHERE c.id = :connector_id AND c.organization_id = :org_id
+            WHERE c.id = :connector_id 
+            AND c.organization_id = :org_id
         """),
         {"connector_id": connector_id, "org_id": organization_id}
     ).fetchone()
@@ -2959,10 +2473,10 @@ async def discover_trending_content(
         # Get connector and domain info
         connector = db.execute(
             text("""
-                SELECT c.*, od.domain_name as domain_name
+                SELECT c.*
                 FROM connectors c
-                JOIN organization_domains od ON c.domain_id = od.id
-                WHERE c.id = :connector_id AND c.organization_id = :org_id
+                WHERE c.id = :connector_id 
+                AND c.organization_id = :org_id
             """),
             {"connector_id": connector_id, "org_id": organization_id}
         ).fetchone()
@@ -3428,10 +2942,10 @@ async def start_enhanced_crawl_session(
         # Get connector configuration
         connector = db.execute(
             text("""
-                SELECT c.*, od.domain_name as domain_name
+                SELECT c.*
                 FROM connectors c
-                JOIN organization_domains od ON c.domain_id = od.id
-                WHERE c.id = :connector_id AND c.organization_id = :org_id
+                WHERE c.id = :connector_id 
+                AND c.organization_id = :org_id
             """),
             {"connector_id": connector_id, "org_id": organization_id}
         ).fetchone()
@@ -3786,107 +3300,599 @@ async def crawl_progress_websocket(
         
         while True:
             try:
-                current_time = datetime.utcnow()
-                
-                # Check if there's an active sync job every 5 seconds
-                if (current_time - last_sync_job_check).seconds >= 5:
-                    active_sync = db.execute(
-                        text("""
-                            SELECT sj.id, sj.status, sj.started_at, sj.metadata
-                            FROM sync_jobs sj
-                            WHERE sj.connector_id = :connector_id 
-                            AND sj.status IN ('pending', 'running')
-                            ORDER BY sj.started_at DESC
-                            LIMIT 1
-                        """),
-                        {"connector_id": connector_id}
-                    ).fetchone()
-                    
-                    if active_sync:
-                        await websocket.send_json({
-                            "type": "sync_status",
-                            "sync_job_id": str(active_sync.id),
-                            "status": active_sync.status,
-                            "started_at": active_sync.started_at.isoformat() if active_sync.started_at else None,
-                            "metadata": active_sync.metadata,
-                            "timestamp": current_time.isoformat()
-                        })
-                    
-                    last_sync_job_check = current_time
-                
-                # Get current crawled pages count and recent activity
-                crawl_stats = db.execute(
+                # Get current crawl progress from sync jobs
+                result = db.execute(
                     text("""
-                        SELECT 
-                            COUNT(*) as total_pages,
-                            COUNT(CASE WHEN cp.last_crawled > NOW() - INTERVAL '1 minute' THEN 1 END) as recent_pages,
-                            MAX(cp.last_crawled) as last_activity
-                        FROM crawled_pages cp
-                        JOIN connectors c ON cp.domain_id = c.domain_id
-                        WHERE c.id = :connector_id
+                        SELECT sj.status, sj.progress_percentage, sj.processed_items, 
+                               sj.total_items, sj.last_activity_at, sj.error_message
+                        FROM sync_jobs sj
+                        WHERE sj.connector_id = :connector_id
+                        ORDER BY sj.created_at DESC
+                        LIMIT 1
                     """),
                     {"connector_id": connector_id}
                 ).fetchone()
                 
-                total_pages = crawl_stats.total_pages or 0
-                recent_pages = crawl_stats.recent_pages or 0
-                
-                # Send progress update if there's new activity
-                if total_pages != last_count or recent_pages > 0:
-                    # Get the most recent pages crawled in the last minute
-                    recent_crawled = db.execute(
-                        text("""
-                            SELECT cp.url, cp.title, cp.status, cp.last_crawled
-                            FROM crawled_pages cp
-                            JOIN connectors c ON cp.domain_id = c.domain_id
-                            WHERE c.id = :connector_id 
-                            AND cp.last_crawled > NOW() - INTERVAL '1 minute'
-                            ORDER BY cp.last_crawled DESC
-                            LIMIT 5
-                        """),
-                        {"connector_id": connector_id}
-                    ).fetchall()
-                    
+                if result:
+                    # Send progress update
                     await websocket.send_json({
-                        "type": "crawl_progress",
-                        "total_pages": total_pages,
-                        "new_pages": total_pages - last_count,
-                        "recent_activity": recent_pages,
-                        "last_activity": crawl_stats.last_activity.isoformat() if crawl_stats.last_activity else None,
-                        "recent_pages": [
-                            {
-                                "url": page.url,
-                                "title": page.title,
-                                "status": page.status,
-                                "crawled_at": page.last_crawled.isoformat() if page.last_crawled else None
-                            }
-                            for page in recent_crawled
-                        ],
-                        "timestamp": current_time.isoformat()
+                        "type": "progress",
+                        "status": result.status,
+                        "progress_percentage": result.progress_percentage or 0,
+                        "processed_items": result.processed_items or 0,
+                        "total_items": result.total_items or 0,
+                        "last_activity": result.last_activity_at.isoformat() if result.last_activity_at else None,
+                        "error_message": result.error_message,
+                        "timestamp": datetime.utcnow().isoformat()
                     })
                     
-                    last_count = total_pages
+                    # If completed or failed, send final status and close
+                    if result.status in ['completed', 'failed']:
+                        await websocket.send_json({
+                            "type": "finished",
+                            "final_status": result.status,
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                        break
                 
-                # Wait 1 second before next check
                 await asyncio.sleep(1)
                 
             except Exception as e:
+                logger.error(f"Error in crawl progress websocket: {e}")
                 await websocket.send_json({
                     "type": "error",
-                    "message": f"Error getting crawl progress: {str(e)}",
+                    "message": str(e),
                     "timestamp": datetime.utcnow().isoformat()
                 })
-                await asyncio.sleep(5)  # Wait longer on error
+                break
                 
     except WebSocketDisconnect:
-        print(f"WebSocket disconnected for connector {connector_id}")
+        logger.info("WebSocket disconnected")
     except Exception as e:
-        print(f"WebSocket error for connector {connector_id}: {str(e)}")
+        logger.error(f"WebSocket error: {e}")
         try:
             await websocket.send_json({
                 "type": "error",
-                "message": f"Connection error: {str(e)}",
+                "message": str(e),
                 "timestamp": datetime.utcnow().isoformat()
             })
         except:
             pass
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
+# ============================================================================
+# TWO-PHASE WEB SCRAPER ENDPOINTS
+# ============================================================================
+
+@router.post("/{connector_id}/discover-urls", response_model=Dict[str, Any])
+async def discover_web_scraper_urls(
+    domain_id: str,
+    connector_id: str,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("connectors:write"))
+):
+    """Phase 1: Discover URLs from sitemap and light crawling"""
+    # Get user's organization
+    org_result = db.execute(
+        text("""
+            SELECT om.organization_id, od.domain_name
+            FROM organization_members om
+            JOIN organization_domains od ON om.organization_id = od.organization_id
+            WHERE om.user_id = :user_id AND om.is_active = true AND od.id = :domain_id
+            LIMIT 1
+        """),
+        {"user_id": current_user["id"], "domain_id": domain_id}
+    ).fetchone()
+    
+    if not org_result:
+        raise HTTPException(status_code=403, detail="User not associated with this domain")
+    
+    organization_id = str(org_result.organization_id)
+    domain_name = org_result.domain_name
+    
+    # Get connector
+    connector = db.execute(
+        text("""
+            SELECT * FROM connectors 
+            WHERE id = :connector_id AND organization_id = :org_id
+        """),
+        {"connector_id": connector_id, "org_id": organization_id}
+    ).fetchone()
+    
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    
+    if connector.connector_type != "web_scraper":
+        raise HTTPException(status_code=400, detail="This endpoint is only for web scraper connectors")
+    
+    try:
+        # Import and create connector instance
+        from connectors.web_scraper_connector import WebScraperConnector
+        from services.base_connector import ConnectorConfig
+        
+        config = ConnectorConfig(
+            id=str(connector.id),
+            name=connector.name,
+            connector_type=connector.connector_type,
+            organization_id=organization_id,
+            domain=domain_name,
+            auth_config=connector.auth_config or {},
+            sync_config=connector.sync_config or {},
+            mapping_config=connector.mapping_config or {},
+            is_enabled=connector.is_enabled
+        )
+        
+        scraper = WebScraperConnector(config)
+        discovered_urls = await scraper.discover_urls()
+        
+        # Log the discovery action
+        AuditLogger.log_event(
+            db, "web_scraper_discover", current_user["id"], "connectors", "discover",
+            f"URL discovery for connector {connector.name}",
+            {"connector_id": connector_id, "total_discovered": discovered_urls["total_discovered"]}
+        )
+        
+        return {
+            "success": True,
+            "message": "URL discovery completed",
+            "discovered_urls": discovered_urls
+        }
+        
+    except Exception as e:
+        logger.error(f"Error discovering URLs: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to discover URLs: {str(e)}")
+
+
+@router.get("/{connector_id}/discovered-urls", response_model=Dict[str, Any])
+async def get_discovered_urls(
+    domain_id: str,
+    connector_id: str,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("connectors:read"))
+):
+    """Get discovered URLs from previous discovery phase"""
+    # Get user's organization
+    org_result = db.execute(
+        text("""
+            SELECT om.organization_id, od.domain_name
+            FROM organization_members om
+            JOIN organization_domains od ON om.organization_id = od.organization_id
+            WHERE om.user_id = :user_id AND om.is_active = true AND od.id = :domain_id
+            LIMIT 1
+        """),
+        {"user_id": current_user["id"], "domain_id": domain_id}
+    ).fetchone()
+    
+    if not org_result:
+        raise HTTPException(status_code=403, detail="User not associated with this domain")
+    
+    organization_id = str(org_result.organization_id)
+    domain_name = org_result.domain_name
+    
+    # Get connector
+    connector = db.execute(
+        text("""
+            SELECT * FROM connectors 
+            WHERE id = :connector_id AND organization_id = :org_id
+        """),
+        {"connector_id": connector_id, "org_id": organization_id}
+    ).fetchone()
+    
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    
+    if connector.connector_type != "web_scraper":
+        raise HTTPException(status_code=400, detail="This endpoint is only for web scraper connectors")
+    
+    try:
+        # Import and create connector instance
+        from connectors.web_scraper_connector import WebScraperConnector
+        from services.base_connector import ConnectorConfig
+        
+        config = ConnectorConfig(
+            id=str(connector.id),
+            name=connector.name,
+            connector_type=connector.connector_type,
+            organization_id=organization_id,
+            domain=domain_name,
+            auth_config=connector.auth_config or {},
+            sync_config=connector.sync_config or {},
+            mapping_config=connector.mapping_config or {},
+            is_enabled=connector.is_enabled
+        )
+        
+        scraper = WebScraperConnector(config)
+        discovered_urls = await scraper._load_discovered_urls()
+        
+        if not discovered_urls:
+            raise HTTPException(status_code=404, detail="No discovered URLs found. Run URL discovery first.")
+        
+        return {
+            "success": True,
+            "discovered_urls": discovered_urls
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting discovered URLs: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get discovered URLs: {str(e)}")
+
+
+@router.post("/{connector_id}/scrape-urls", response_model=Dict[str, Any])
+async def scrape_discovered_urls(
+    domain_id: str,
+    connector_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("connectors:write"))
+):
+    """Phase 2: Scrape content from discovered URLs"""
+    # Get user's organization
+    org_result = db.execute(
+        text("""
+            SELECT om.organization_id, od.domain_name
+            FROM organization_members om
+            JOIN organization_domains od ON om.organization_id = od.organization_id
+            WHERE om.user_id = :user_id AND om.is_active = true AND od.id = :domain_id
+            LIMIT 1
+        """),
+        {"user_id": current_user["id"], "domain_id": domain_id}
+    ).fetchone()
+    
+    if not org_result:
+        raise HTTPException(status_code=403, detail="User not associated with this domain")
+    
+    organization_id = str(org_result.organization_id)
+    domain_name = org_result.domain_name
+    
+    # Get connector
+    connector = db.execute(
+        text("""
+            SELECT * FROM connectors 
+            WHERE id = :connector_id AND organization_id = :org_id
+        """),
+        {"connector_id": connector_id, "org_id": organization_id}
+    ).fetchone()
+    
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    
+    if connector.connector_type != "web_scraper":
+        raise HTTPException(status_code=400, detail="This endpoint is only for web scraper connectors")
+    
+    try:
+        # Import and create connector instance
+        from connectors.web_scraper_connector import WebScraperConnector
+        from services.base_connector import ConnectorConfig
+        
+        config = ConnectorConfig(
+            id=str(connector.id),
+            name=connector.name,
+            connector_type=connector.connector_type,
+            organization_id=organization_id,
+            domain=domain_name,
+            auth_config=connector.auth_config or {},
+            sync_config=connector.sync_config or {},
+            mapping_config=connector.mapping_config or {},
+            is_enabled=connector.is_enabled
+        )
+        
+        scraper = WebScraperConnector(config)
+        
+        # Check if URLs have been discovered
+        discovered_urls = await scraper._load_discovered_urls()
+        if not discovered_urls:
+            raise HTTPException(status_code=400, detail="No discovered URLs found. Run URL discovery first.")
+        
+        # Create sync job for tracking
+        sync_job_id = str(uuid.uuid4())
+        
+        # Prepare metadata as JSON string for JSONB column
+        import json
+        metadata_json = json.dumps({
+            "triggered_by": current_user["id"],
+            "total_items": discovered_urls.get("total_discovered", 0),
+            "processed_items": 0
+        })
+        
+        db.execute(
+            text("""
+                INSERT INTO sync_jobs (
+                    id, connector_id, organization_id, status, 
+                    started_at, total_items, metadata
+                ) VALUES (
+                    :sync_job_id, :connector_id, :org_id, 'running',
+                    NOW(), :total_items, :metadata
+                )
+            """),
+            {
+                "sync_job_id": sync_job_id,
+                "connector_id": connector_id,
+                "org_id": organization_id,
+                "total_items": discovered_urls.get("total_discovered", 0),
+                "metadata": metadata_json
+            }
+        )
+        db.commit()
+        
+        # Run scraping in background
+        def run_scraping():
+            import asyncio
+            async def scraping_task():
+                try:
+                    result = await scraper.scrape_discovered_urls()
+                    
+                    # Update sync job status
+                    from dependencies import get_db
+                    db = next(get_db())
+                    
+                    # Prepare metadata as JSON string for JSONB column
+                    completed_metadata_json = json.dumps({
+                        "triggered_by": current_user["id"],
+                        "total_items": discovered_urls.get("total_discovered", 0),
+                        "processed_items": len(result),  # result is a list of scraped pages
+                        "progress_percentage": 100
+                    })
+                    
+                    db.execute(
+                        text("""
+                            UPDATE sync_jobs 
+                            SET status = 'completed', 
+                                completed_at = NOW(),
+                                records_processed = :records_processed,
+                                records_created = :records_created,
+                                metadata = :metadata
+                            WHERE id = :sync_job_id
+                        """),
+                        {
+                            "sync_job_id": sync_job_id,
+                            "records_processed": len(result),
+                            "records_created": len(result),
+                            "metadata": completed_metadata_json
+                        }
+                    )
+                    db.commit()
+                    
+                except Exception as e:
+                    logger.error(f"Background scraping failed: {e}")
+                    # Update sync job with error
+                    from dependencies import get_db
+                    db = next(get_db())
+                    db.execute(
+                        text("""
+                            UPDATE sync_jobs 
+                            SET status = 'failed', 
+                                completed_at = NOW(),
+                                error_message = :error_message
+                            WHERE id = :sync_job_id
+                        """),
+                        {
+                            "sync_job_id": sync_job_id,
+                            "error_message": str(e)
+                        }
+                    )
+                    db.commit()
+            
+            asyncio.run(scraping_task())
+        
+        background_tasks.add_task(run_scraping)
+        
+        # Log the scraping action
+        AuditLogger.log_event(
+            db, "web_scraper_scrape", current_user["id"], "connectors", "scrape",
+            f"Content scraping started for connector {connector.name}",
+            {"connector_id": connector_id, "sync_job_id": sync_job_id}
+        )
+        
+        return {
+            "success": True,
+            "message": "Content scraping started",
+            "sync_job_id": sync_job_id,
+            "estimated_pages": discovered_urls.get("total_discovered", 0)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting content scraping: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start content scraping: {str(e)}")
+
+
+@router.post("/{connector_id}/regenerate-embeddings", response_model=Dict[str, Any])
+async def regenerate_embeddings(
+    domain_id: str,
+    connector_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("connectors:write"))
+):
+    """Regenerate embeddings for existing scraped content that doesn't have embeddings"""
+    # Get user's organization
+    org_result = db.execute(
+        text("""
+            SELECT om.organization_id, od.domain_name
+            FROM organization_members om
+            JOIN organization_domains od ON om.organization_id = od.organization_id
+            WHERE om.user_id = :user_id AND om.is_active = true AND od.id = :domain_id
+            LIMIT 1
+        """),
+        {"user_id": current_user["id"], "domain_id": domain_id}
+    ).fetchone()
+    
+    if not org_result:
+        raise HTTPException(status_code=403, detail="User not associated with this domain")
+    
+    organization_id = str(org_result.organization_id)
+    domain_name = org_result.domain_name
+    
+    # Get connector
+    connector = db.execute(
+        text("""
+            SELECT * FROM connectors 
+            WHERE id = :connector_id AND organization_id = :org_id
+        """),
+        {"connector_id": connector_id, "org_id": organization_id}
+    ).fetchone()
+    
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    
+    if connector.connector_type != "web_scraper":
+        raise HTTPException(status_code=400, detail="This endpoint is only for web scraper connectors")
+    
+    try:
+        # Import and create connector instance
+        from connectors.web_scraper_connector import WebScraperConnector
+        from services.base_connector import ConnectorConfig
+        
+        config = ConnectorConfig(
+            id=str(connector.id),
+            name=connector.name,
+            connector_type=connector.connector_type,
+            organization_id=organization_id,
+            domain=domain_name,
+            auth_config=connector.auth_config or {},
+            sync_config=connector.sync_config or {},
+            mapping_config=connector.mapping_config or {},
+            is_enabled=connector.is_enabled
+        )
+        
+        scraper = WebScraperConnector(config)
+        
+        # Check if there are any scraped pages
+        pages_count = db.execute(
+            text("""
+                SELECT COUNT(*) as count FROM crawled_pages 
+                WHERE organization_id = :org_id AND content IS NOT NULL
+            """),
+            {"org_id": organization_id}
+        ).fetchone()
+        
+        if not pages_count or pages_count.count == 0:
+            raise HTTPException(status_code=400, detail="No scraped content found. Run content scraping first.")
+        
+        # Create sync job for tracking
+        sync_job_id = str(uuid.uuid4())
+        
+        # Prepare metadata as JSON string for JSONB column
+        import json
+        metadata_json = json.dumps({
+            "triggered_by": current_user["id"],
+            "operation": "regenerate_embeddings",
+            "total_items": pages_count.count,
+            "processed_items": 0
+        })
+        
+        db.execute(
+            text("""
+                INSERT INTO sync_jobs (
+                    id, connector_id, organization_id, status, 
+                    started_at, total_items, metadata
+                ) VALUES (
+                    :sync_job_id, :connector_id, :org_id, 'running',
+                    NOW(), :total_items, :metadata
+                )
+            """),
+            {
+                "sync_job_id": sync_job_id,
+                "connector_id": connector_id,
+                "org_id": organization_id,
+                "total_items": pages_count.count,
+                "metadata": metadata_json
+            }
+        )
+        db.commit()
+        
+        # Run embedding regeneration in background
+        def run_embedding_regeneration():
+            import asyncio
+            async def embedding_task():
+                try:
+                    result = await scraper.regenerate_missing_embeddings()
+                    
+                    # Update sync job status
+                    from dependencies import get_db
+                    db = next(get_db())
+                    
+                    # Prepare metadata as JSON string for JSONB column
+                    completed_metadata_json = json.dumps({
+                        "triggered_by": current_user["id"],
+                        "operation": "regenerate_embeddings",
+                        "total_items": result.get("total_pages", 0),
+                        "processed_items": result.get("processed", 0),
+                        "created_embeddings": result.get("created", 0),
+                        "errors": result.get("errors", 0),
+                        "progress_percentage": 100
+                    })
+                    
+                    status = "completed" if result.get("errors", 0) == 0 else "completed_with_errors"
+                    
+                    db.execute(
+                        text("""
+                            UPDATE sync_jobs 
+                            SET status = :status, 
+                                completed_at = NOW(),
+                                records_processed = :records_processed,
+                                records_created = :records_created,
+                                metadata = :metadata
+                            WHERE id = :sync_job_id
+                        """),
+                        {
+                            "sync_job_id": sync_job_id,
+                            "status": status,
+                            "records_processed": result.get("processed", 0),
+                            "records_created": result.get("created", 0),
+                            "metadata": completed_metadata_json
+                        }
+                    )
+                    db.commit()
+                    
+                except Exception as e:
+                    logger.error(f"Background embedding regeneration failed: {e}")
+                    # Update sync job with error
+                    from dependencies import get_db
+                    db = next(get_db())
+                    db.execute(
+                        text("""
+                            UPDATE sync_jobs 
+                            SET status = 'failed', 
+                                completed_at = NOW(),
+                                error_message = :error_message
+                            WHERE id = :sync_job_id
+                        """),
+                        {
+                            "sync_job_id": sync_job_id,
+                            "error_message": str(e)
+                        }
+                    )
+                    db.commit()
+            
+            asyncio.run(embedding_task())
+        
+        background_tasks.add_task(run_embedding_regeneration)
+        
+        # Log the embedding regeneration action
+        AuditLogger.log_event(
+            db, "web_scraper_regenerate_embeddings", current_user["id"], "connectors", "regenerate_embeddings",
+            f"Embedding regeneration started for connector {connector.name}",
+            {"connector_id": connector_id, "sync_job_id": sync_job_id}
+        )
+        
+        return {
+            "success": True,
+            "message": "Embedding regeneration started",
+            "sync_job_id": sync_job_id,
+            "estimated_pages": pages_count.count
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting embedding regeneration: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start embedding regeneration: {str(e)}")

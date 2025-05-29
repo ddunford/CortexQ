@@ -13,7 +13,7 @@ import Card, { CardHeader, CardTitle, CardContent } from '../ui/Card';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import { Organization } from '../../types';
-import { apiClient } from '../../utils/api';
+import { api } from '../../utils/api';
 
 interface OrganizationSettingsProps {
   organization: Organization;
@@ -49,7 +49,7 @@ const OrganizationSettings: React.FC<OrganizationSettingsProps> = ({
     setError(null);
 
     try {
-      const response = await apiClient.updateOrganization(organization.id, {
+      const response = await api.updateOrganization(organization.id, {
         name: orgForm.name,
         description: orgForm.description,
         website: orgForm.website,

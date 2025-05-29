@@ -118,14 +118,27 @@ services:
           sleep 5
         done &&
         echo 'Ollama is ready! Checking for models...' &&
-        if [ $$(curl -s http://ollama:11434/api/tags | grep -c '\"models\":\\[\\]') -eq 1 ]; then
-          echo 'No models found, pulling llama3.2:1b...' &&
-          ollama pull llama3.2:1b &&
-          echo 'Model llama3.2:1b pulled successfully!'
+        models_count=$$(curl -s http://ollama:11434/api/tags | grep -o '\"name\":' | wc -l) &&
+        if [ $$models_count -eq 0 ]; then
+          echo 'No models found, pulling models...' &&
+          echo 'Attempting to pull llama3.1:8b (more capable model)...' &&
+          if ollama pull llama3.1:8b; then
+            echo 'Successfully pulled llama3.1:8b!'
+          else
+            echo 'Failed to pull llama3.1:8b, trying fallback llama3.2:1b...' &&
+            if ollama pull llama3.2:1b; then
+              echo 'Successfully pulled fallback model llama3.2:1b!'
+            else
+              echo 'Failed to pull any models!'
+              exit 1
+            fi
+          fi
         else
           echo 'Models already exist, skipping pull.'
         fi &&
-        echo 'Ollama initialization complete!'
+        echo 'Ollama initialization complete!' &&
+        echo 'Available models:' &&
+        ollama list
       "
     restart: "no"
 

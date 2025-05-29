@@ -6,6 +6,7 @@ Provides RBAC, JWT management, and permission checking
 
 import json
 import uuid
+import os
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
@@ -15,8 +16,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 import redis
 
-# Configuration
-JWT_SECRET = "your-super-secret-jwt-key-change-in-production"
+# Configuration - Read from environment variables
+JWT_SECRET = os.getenv("JWT_SECRET", "your-super-secret-jwt-key-change-in-production")
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 REFRESH_TOKEN_EXPIRE_DAYS = 30

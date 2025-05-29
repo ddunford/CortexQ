@@ -18,8 +18,8 @@ import {
 import Card, { CardHeader, CardTitle, CardContent } from '../ui/Card';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
-import { apiClient } from '../../utils/api';
-import { User as UserType } from '../../types';
+import { api } from '../../utils/api';
+import { User as UserType, UserProfileData, UserPreferences, PreferenceOption } from '../../types';
 
 interface UserProfileProps {
   user: UserType;
@@ -72,7 +72,7 @@ const UserProfile: React.FC<UserProfileProps> = ({ user, onClose, onUserUpdate }
 
   const checkConnection = async () => {
     try {
-      const response = await apiClient.getHealthStatus();
+      const response = await api.getHealthStatus();
       setConnectionStatus(response.success ? 'connected' : 'disconnected');
     } catch (error) {
       setConnectionStatus('disconnected');
@@ -81,7 +81,7 @@ const UserProfile: React.FC<UserProfileProps> = ({ user, onClose, onUserUpdate }
 
   const loadUserPreferences = async () => {
     try {
-      const response = await apiClient.getUserPreferences();
+      const response = await api.getUserPreferences();
       if (response.success) {
         setPreferences(prev => ({ ...prev, ...response.data }));
         setConnectionStatus('connected');
@@ -104,7 +104,7 @@ const UserProfile: React.FC<UserProfileProps> = ({ user, onClose, onUserUpdate }
     setError(null);
 
     try {
-      const response = await apiClient.updateUserProfile({
+      const response = await api.updateUserProfile({
         full_name: profileForm.full_name,
         email: profileForm.email,
       });
@@ -146,7 +146,7 @@ const UserProfile: React.FC<UserProfileProps> = ({ user, onClose, onUserUpdate }
     setError(null);
 
     try {
-      const response = await apiClient.changePassword({
+      const response = await api.changePassword({
         current_password: passwordForm.current_password,
         new_password: passwordForm.new_password,
       });
@@ -177,7 +177,7 @@ const UserProfile: React.FC<UserProfileProps> = ({ user, onClose, onUserUpdate }
     setError(null);
 
     try {
-      const response = await apiClient.updateUserPreferences(preferences);
+      const response = await api.updateUserPreferences(preferences);
 
       if (response.success) {
         setSuccess('Preferences updated successfully');

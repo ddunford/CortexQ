@@ -154,9 +154,18 @@ class ConnectorResponse(ConnectorBase):
     id: str
     organization_id: str
     domain: str  # Domain name from JOIN with organization_domains
+    
+    # Configuration fields
+    auth_config: Optional[Dict[str, Any]] = None
+    sync_config: Optional[SyncConfig] = None
+    mapping_config: Optional[MappingConfig] = None
+    
+    # Sync status fields
     last_sync_at: Optional[datetime] = None
     last_sync_status: Optional[str] = None
     sync_error_message: Optional[str] = None
+    
+    # Timestamps
     created_at: datetime
     updated_at: datetime
     

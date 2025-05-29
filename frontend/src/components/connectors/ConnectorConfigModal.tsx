@@ -4,7 +4,7 @@ import Button from '../ui/Button';
 import Input from '../ui/Input';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card';
 import { ConnectorConfig, ApiResponse } from '../../types';
-import { apiClient } from '../../utils/api';
+import { api } from '../../utils/api';
 import { 
   Settings, 
   Github, 
@@ -15,7 +15,9 @@ import {
   FileText,
   X,
   Check,
-  AlertCircle
+  AlertCircle,
+  Save,
+  TestTube
 } from 'lucide-react';
 
 interface ConnectorConfigModalProps {
@@ -257,7 +259,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
         is_enabled: true
       };
 
-      const response: ApiResponse<ConnectorConfig> = await apiClient.createConnector(domainId, connectorData);
+      const response: ApiResponse<ConnectorConfig> = await api.createConnector(domainId, connectorData);
       
       if (response.success && response.data) {
         onConnectorCreated?.(response.data);

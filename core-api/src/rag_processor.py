@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass
 from enum import Enum
+import re
 
 import numpy as np
 from sqlalchemy.orm import Session
@@ -125,8 +126,8 @@ class MultiDomainVectorStore:
         
         domains = ["general", "support", "sales", "engineering", "product"]
         for domain in domains:
-            # Create a new FAISS index for each domain
-            index = faiss.IndexFlatIP(384)  # MiniLM dimension
+            # Create a new FAISS index for each domain - updated for 768-dimensional embeddings (nomic-embed-text)
+            index = faiss.IndexFlatIP(768)  # nomic-embed-text dimension
             self.domain_indices[domain] = {
                 "index": index,
                 "metadata": [],
@@ -149,11 +150,26 @@ class MultiDomainVectorStore:
         """Search embeddings in database with organization isolation"""
         from database import SessionLocal
         
-        # Generate query embedding using the same service as file processing
-        if self.embeddings_service and self.embeddings_service.is_available():
-            query_embedding = np.array(await self.embeddings_service.encode_async(query), dtype=np.float32)
-        else:
+        print(f"🔍 DEBUG: Starting search for query='{query}', domain='{domain}', org_id='{organization_id}'")
+        
+        # Generate query embedding using Ollama (same as web scraper) for consistency
+        try:
+            from search.embedding_service import EmbeddingService
+            from config import get_settings
+            
+            settings = get_settings()
+            embedding_service = EmbeddingService(settings)
+            await embedding_service.initialize()
+            
+            # Generate embedding using the same service as web scraper (Ollama 768d)
+            query_embedding = await embedding_service.generate_embedding(query)
+            print(f"🔍 DEBUG: Query embedding generated using Ollama, shape: {query_embedding.shape}")
+            
+        except Exception as e:
+            print(f"⚠️ DEBUG: Ollama embedding failed, falling back to SentenceTransformer: {e}")
+            # Fallback to SentenceTransformer if Ollama fails
             query_embedding = self.embeddings_model.encode([query])[0]
+            print(f"🔍 DEBUG: Query embedding generated using SentenceTransformer fallback, shape: {query_embedding.shape}")
         
         db = SessionLocal()
         try:
@@ -164,10 +180,11 @@ class MultiDomainVectorStore:
             ).fetchone()
             
             if not domain_result:
-                print(f"Domain '{domain}' not found for organization {organization_id}")
+                print(f"❌ DEBUG: Domain '{domain}' not found for organization {organization_id}")
                 return []
             
             domain_id = domain_result.id
+            print(f"✅ DEBUG: Found domain_id: {domain_id}")
             
             # Build query parameters
             query_params = {
@@ -175,20 +192,28 @@ class MultiDomainVectorStore:
                 "organization_id": organization_id
             }
             
-            # Query embeddings from database with organization isolation
+            # Query embeddings from database with organization isolation and polymorphic support
             result = db.execute(
                 text("""
                     SELECT e.id, e.content_text, e.embedding, e.source_id, e.chunk_index,
-                           f.original_filename as original_filename,
-                           f.content_type as content_type,
-                           od.domain_name, e.organization_id
+                           COALESCE(f.original_filename, cp.title) as title,
+                           COALESCE(f.content_type, 'text/html') as content_type,
+                           od.domain_name, e.organization_id, e.source_type,
+                           cp.url as source_url
                     FROM embeddings e
-                    INNER JOIN files f ON e.source_id = f.id
+                    LEFT JOIN files f ON e.source_type = 'file' AND e.source_id = f.id
+                    LEFT JOIN crawled_pages cp ON e.source_type = 'web_page' AND e.source_id = cp.id
                     LEFT JOIN organization_domains od ON e.domain_id = od.id
                     WHERE e.domain_id = :domain_id
                     AND e.organization_id = :organization_id
-                    AND f.processed = true
                     AND e.source_id IS NOT NULL
+                    AND (
+                        (e.source_type = 'file' AND f.processed = true)
+                        OR 
+                        (e.source_type = 'web_page' AND cp.status = 'success')
+                        OR
+                        (e.source_type NOT IN ('file', 'web_page'))
+                    )
                     ORDER BY e.created_at DESC
                     LIMIT 200
                 """),
@@ -196,12 +221,19 @@ class MultiDomainVectorStore:
             )
             
             embeddings_data = result.fetchall()
+            print(f"🔍 DEBUG: Found {len(embeddings_data)} embeddings in database")
             
             if not embeddings_data:
+                print("❌ DEBUG: No embeddings found!")
                 return []
+            
+            # Debug first few embeddings
+            for i, row in enumerate(embeddings_data[:3]):
+                print(f"🔍 DEBUG: Embedding {i+1}: source_type={row.source_type}, title='{row.title}', content_preview='{row.content_text[:50]}...'")
             
             # Calculate similarities
             results = []
+            similarity_scores = []
             for row in embeddings_data:
                 try:
                     # Parse stored embedding from JSON string to numpy array
@@ -212,34 +244,52 @@ class MultiDomainVectorStore:
                         embedding_list = row.embedding
                     stored_embedding = np.array(embedding_list, dtype=np.float32)
                     
+                    print(f"🔍 DEBUG: Comparing query shape {query_embedding.shape} with stored shape {stored_embedding.shape}")
+                    
                     # Calculate cosine similarity
                     similarity = np.dot(query_embedding, stored_embedding) / (
                         np.linalg.norm(query_embedding) * np.linalg.norm(stored_embedding)
                     )
                     
+                    similarity_scores.append(similarity)
+                    
                     if similarity >= min_similarity:
                         results.append(SearchResult(
                             content=row.content_text,
                             metadata={
-                                "title": row.original_filename,
+                                "title": row.title,
                                 "content_type": row.content_type,
                                 "chunk_index": row.chunk_index,
-                                "organization_id": str(row.organization_id)
+                                "organization_id": str(row.organization_id),
+                                "source_url": row.source_url,
+                                "source_type": row.source_type
                             },
                             similarity=float(similarity),
                             domain=row.domain_name,  # Use domain_name from join
                             source_id=str(row.source_id) if row.source_id else ""
                         ))
                 except Exception as e:
-                    print(f"Error calculating similarity for embedding {row.id}: {e}")
+                    print(f"❌ DEBUG: Error calculating similarity for embedding {row.id}: {e}")
                     continue
+            
+            print(f"🔍 DEBUG: Calculated {len(similarity_scores)} similarities")
+            if similarity_scores:
+                max_sim = max(similarity_scores)
+                avg_sim = sum(similarity_scores) / len(similarity_scores)
+                print(f"🔍 DEBUG: Max similarity: {max_sim:.3f}, Avg similarity: {avg_sim:.3f}, Min threshold: {min_similarity}")
+                print(f"🔍 DEBUG: Results above threshold: {len(results)}")
             
             # Sort by similarity and return top results
             results.sort(key=lambda x: x.similarity, reverse=True)
-            return results[:top_k]
+            final_results = results[:top_k]
+            print(f"🔍 DEBUG: Returning {len(final_results)} results")
+            
+            return final_results
             
         except Exception as e:
-            print(f"Database search error: {e}")
+            print(f"❌ DEBUG: Database search error: {e}")
+            import traceback
+            traceback.print_exc()
             return []
         finally:
             db.close()
@@ -411,8 +461,6 @@ class AgentWorkflowProcessor:
     
     def _extract_error_patterns(self, query: str) -> Dict[str, Any]:
         """Extract error patterns from query"""
-        import re
-        
         patterns = {
             "stack_trace": bool(re.search(r"(stack trace|traceback|exception)", query.lower())),
             "error_codes": re.findall(r"\b[45]\d{2}\b", query),  # HTTP error codes
@@ -483,10 +531,50 @@ class AgentWorkflowProcessor:
     
     def _generate_training_analysis(self, query: str, vector_results: List[SearchResult]) -> Dict:
         """Generate training content analysis"""
+        
+        # Detect query type with more specific categories
+        query_lower = query.lower()
+        query_type = "general"
+        procedure_action = ""
+        
+        if "how" in query_lower:
+            if any(keyword in query_lower for keyword in ["create", "make", "build", "setup", "configure"]):
+                query_type = "how_to"
+                # Extract what they want to create/do
+                if "create" in query_lower:
+                    create_match = re.search(r'create\s+(?:a\s+)?(\w+)', query_lower)
+                    if create_match:
+                        procedure_action = f"create a {create_match.group(1)}"
+                    else:
+                        procedure_action = "create this item"
+                elif "job" in query_lower:
+                    procedure_action = "create a job"
+            else:
+                query_type = "how_to"
+        elif "what" in query_lower:
+            query_type = "what_is"
+        
+        # Detect complexity level
+        complexity = "intermediate"
+        if any(word in query_lower for word in ["basic", "simple", "intro", "beginner", "start"]):
+            complexity = "beginner"
+        elif any(word in query_lower for word in ["advanced", "complex", "detailed", "expert"]):
+            complexity = "advanced"
+        
+        # Analyze available documentation quality
+        has_procedural_content = any("step" in result.content.lower() or "procedure" in result.content.lower() 
+                                   for result in vector_results)
+        has_visual_content = any(result.metadata.get("images") or result.metadata.get("screenshots") 
+                               for result in vector_results)
+        
         return {
             "documentation_count": len(vector_results),
-            "query_type": "how_to" if "how" in query.lower() else "what_is" if "what" in query.lower() else "general",
-            "complexity": "beginner" if any(word in query.lower() for word in ["basic", "simple", "intro"]) else "advanced"
+            "query_type": query_type,
+            "procedure_action": procedure_action,
+            "complexity": complexity,
+            "has_procedural_content": has_procedural_content,
+            "has_visual_content": has_visual_content,
+            "content_quality": "high" if has_procedural_content and len(vector_results) > 0 else "medium"
         }
     
     def _format_bug_response(self, analysis: Dict, known_issues: List[Dict], vector_results: List[SearchResult]) -> str:
@@ -533,24 +621,79 @@ class AgentWorkflowProcessor:
         return response
     
     def _format_training_response(self, analysis: Dict, vector_results: List[SearchResult]) -> str:
-        """Format training workflow response"""
-        response = f"**Training & Documentation**\n\n"
-        response += f"**Query Type**: {analysis['query_type'].replace('_', ' ').title()}\n"
-        response += f"**Complexity Level**: {analysis['complexity'].title()}\n\n"
+        """Generate training-focused response with enhanced formatting"""
+        if not vector_results:
+            return "I couldn't find specific training materials for your question. Please contact support for assistance."
         
-        if vector_results:
-            response += f"**Available Resources**: {len(vector_results)} documents found\n\n"
-            response += "**Key Information**:\n"
-            for i, result in enumerate(vector_results[:3], 1):
-                title = result.metadata.get("title", f"Document {i}")
-                response += f"{i}. **{title}**: {result.content[:150]}...\n\n"
+        # Get the best result
+        best_result = max(vector_results, key=lambda x: x.similarity)
         
-        response += "**Recommended Learning Path**:\n"
-        response += "1. Start with the provided resources\n"
-        response += "2. Practice with examples\n"
-        response += "3. Ask follow-up questions if needed\n"
+        # Check if this is a procedural question (how-to)
+        is_procedural = analysis.get("query_type") == "how_to"
+        has_steps = any("step" in result.content.lower() for result in vector_results)
         
-        return response
+        if is_procedural and has_steps:
+            # Format as step-by-step guide
+            response_parts = []
+            
+            # Add introductory context
+            title = best_result.metadata.get("title", "guide")
+            response_parts.append(f"Here's how to {analysis.get('procedure_action', 'complete this task')} based on our {title}:")
+            
+            # Extract and format steps
+            content = best_result.content
+            
+            # Try different step extraction patterns
+            step_patterns = [
+                r'(?:^|\n)\s*(?:Step\s*)?(\d+)[\.\)]\s*([^\n]+)',
+                r'(?:^|\n)\s*(\d+)\.\s*([^\n]+)',
+                r'(?:^|\n)\s*[\-\*]\s*([^\n]+)'
+            ]
+            
+            steps_found = []
+            for pattern in step_patterns:
+                matches = re.findall(pattern, content, re.MULTILINE | re.IGNORECASE)
+                if matches:
+                    if len(matches[0]) == 2:  # Pattern with step number and text
+                        steps_found = [f"{m[0]}. {m[1].strip()}" for m in matches[:8]]
+                    else:  # Pattern with just text
+                        steps_found = [f"{i+1}. {m.strip()}" for i, m in enumerate(matches[:8])]
+                    break
+            
+            if steps_found:
+                response_parts.append("\n".join(steps_found))
+            else:
+                # Fallback: extract first few sentences as guidance
+                sentences = content.split('. ')
+                guidance = '. '.join(sentences[:3])
+                response_parts.append(guidance)
+            
+            # Add helpful context
+            if best_result.metadata.get("images") or best_result.metadata.get("screenshots"):
+                response_parts.append("\n📷 This guide includes screenshots for visual reference.")
+            
+            return "\n\n".join(response_parts)
+        
+        else:
+            # Standard informational response
+            content = best_result.content.strip()
+            
+            # Create a focused response
+            sentences = content.split('. ')
+            key_info = '. '.join(sentences[:4]) if len(sentences) > 4 else content
+            
+            if len(key_info) > 400:
+                key_info = key_info[:400] + "..."
+            
+            title = best_result.metadata.get("title", "documentation")
+            
+            response = f"Based on our {title}:\n\n{key_info}"
+            
+            # Add reference to visual content if available
+            if best_result.metadata.get("images") or best_result.metadata.get("screenshots"):
+                response += "\n\n📷 Visual guides and screenshots are available in the full documentation."
+            
+            return response
     
     async def _store_workflow_execution(
         self, 
@@ -1177,23 +1320,27 @@ class EnhancedRAGProcessor:
             # Get the best result for this source
             best_result = max(source_results, key=lambda x: x.similarity)
             
-            # Improved title formatting
+            # Improved title formatting based on source type
             title = best_result.metadata.get("title", "Document")
+            source_type = best_result.metadata.get("source_type", "file")
             
             # Clean up title for better user experience
-            if title.endswith('.pdf'):
-                title = title[:-4]  # Remove .pdf extension
-            
-            # Extract clean document name without technical suffixes
             clean_title = title
-            
-            # For help articles and documentation, provide more descriptive titles
-            if 'report' in title.lower():
-                clean_title = title.replace('-', ' ').title()
-            elif 'help' in title.lower() or 'guide' in title.lower():
-                clean_title = f"Help Guide: {title}"
-            elif 'faq' in title.lower():
-                clean_title = f"FAQ: {title}"
+            if source_type == "web_page":
+                # For web pages, use title as-is (it's already cleaned from scraping)
+                clean_title = title if title else "Web Page"
+            elif source_type == "file":
+                # For files, clean up filename
+                if title.endswith('.pdf'):
+                    clean_title = title[:-4]  # Remove .pdf extension
+                
+                # Extract clean document name without technical suffixes
+                if 'report' in title.lower():
+                    clean_title = title.replace('-', ' ').title()
+                elif 'help' in title.lower() or 'guide' in title.lower():
+                    clean_title = f"Help Guide: {title}"
+                elif 'faq' in title.lower():
+                    clean_title = f"FAQ: {title}"
             
             # Only add chunk info for long documents with multiple meaningful sections
             chunk_index = best_result.metadata.get("chunk_index", 0) or 0
@@ -1218,7 +1365,9 @@ class EnhancedRAGProcessor:
             
             # Determine document type for better categorization
             doc_type = "document"
-            if 'help' in title.lower() or 'guide' in title.lower():
+            if source_type == "web_page":
+                doc_type = "web_page"
+            elif 'help' in title.lower() or 'guide' in title.lower():
                 doc_type = "help_article"
             elif 'faq' in title.lower():
                 doc_type = "faq"
@@ -1226,6 +1375,35 @@ class EnhancedRAGProcessor:
                 doc_type = "report"
             elif best_result.metadata.get("content_type", "").startswith("text/"):
                 doc_type = "text_document"
+            
+            # Get the URL (for web pages) or file ID (for files)
+            source_url = best_result.metadata.get("source_url") if source_type == "web_page" else None
+            
+            # Extract images/screenshots if available
+            images = []
+            if best_result.metadata.get("images"):
+                images = best_result.metadata["images"][:3]  # Limit to 3 images per source
+            elif best_result.metadata.get("screenshots"):
+                images = best_result.metadata["screenshots"][:3]
+            
+            # Extract step-by-step content if available (for procedural documents)
+            steps = []
+            if "step" in best_result.content.lower() or "procedure" in best_result.content.lower():
+                # Extract numbered or bulleted steps
+                step_patterns = [
+                    r'(?:^|\n)\s*(?:Step\s*)?(\d+)[\.\)]\s*([^\n]+)',
+                    r'(?:^|\n)\s*[\-\*]\s*([^\n]+)',
+                    r'(?:^|\n)\s*(\d+)\.\s*([^\n]+)'
+                ]
+                
+                for pattern in step_patterns:
+                    matches = re.findall(pattern, best_result.content, re.MULTILINE | re.IGNORECASE)
+                    if matches:
+                        if len(matches[0]) == 2:  # Pattern with step number and text
+                            steps = [{"number": m[0], "text": m[1].strip()} for m in matches[:10]]
+                        else:  # Pattern with just text
+                            steps = [{"number": i+1, "text": m.strip()} for i, m in enumerate(matches[:10])]
+                        break
             
             sources.append({
                 "id": best_result.source_id,
@@ -1236,14 +1414,20 @@ class EnhancedRAGProcessor:
                 "domain": best_result.domain,
                 "similarity": round(best_result.similarity, 3),
                 "confidence_score": f"{round(best_result.similarity * 100)}%",
-                "url": best_result.metadata.get("url"),
+                "url": source_url,  # Only populated for web pages
                 "chunk_index": chunk_index,
                 "content_length": len(best_result.content),
                 "word_count": len(best_result.content.split()),
                 "document_type": doc_type,  # Add document type classification
+                "source_type": source_type,  # Add source type for UI handling
                 "expandable": True,  # Flag to indicate this source can be expanded
                 "citation_id": f"cite_{citation_counter}",  # Unique citation identifier
-                "source_quality": "high" if best_result.similarity > 0.7 else "medium" if best_result.similarity > 0.5 else "low"
+                "source_quality": "high" if best_result.similarity > 0.7 else "medium" if best_result.similarity > 0.5 else "low",
+                # Enhanced with images and structured content
+                "images": images,  # Screenshots or images from help guides
+                "steps": steps,  # Extracted step-by-step instructions
+                "has_visual_content": len(images) > 0,
+                "has_procedural_content": len(steps) > 0
             })
             citation_counter += 1
         

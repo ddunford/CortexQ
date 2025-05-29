@@ -33,13 +33,17 @@ import {
   Upload,
   Users,
   TestTube,
-  Rocket
+  Rocket,
+  ChevronLeft,
+  FileText,
+  CheckCircle,
+  AlertCircle
 } from 'lucide-react';
 import Card, { CardHeader, CardTitle, CardContent } from '../ui/Card';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import { DomainTemplate, Domain, DomainCreationState } from '../../types';
-import { apiClient } from '../../utils/api';
+import { api } from '../../utils/api';
 
 interface DomainCreationWizardProps {
   organizationId: string;
@@ -83,7 +87,7 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
   }, []);
 
   const loadTemplates = async () => {
-    const response = await apiClient.getDomainTemplates();
+    const response = await api.getDomainTemplates();
     if (response.success) {
       setTemplates(response.data);
     }
@@ -165,7 +169,7 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
         },
       };
 
-      const response = await apiClient.createDomain(organizationId, domainData);
+      const response = await api.createDomain(organizationId, domainData);
       if (response.success) {
         const domain = response.data;
         
@@ -176,7 +180,7 @@ const DomainCreationWizard: React.FC<DomainCreationWizardProps> = ({
           for (let i = 0; i < uploadedFiles.length; i++) {
             const file = uploadedFiles[i];
             try {
-              const uploadResponse = await apiClient.uploadFile(file, domain.id);
+              const uploadResponse = await api.uploadFile(file, domain.id);
               if (!uploadResponse.success) {
                 // Handle upload failure silently or with proper error reporting
               }

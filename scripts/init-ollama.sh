@@ -9,7 +9,8 @@ echo "🚀 Starting Ollama model initialization..."
 
 # Configuration
 OLLAMA_URL="http://localhost:11434"
-MODEL_NAME="llama3.2:1b"
+PRIMARY_MODEL="llama3.1:8b"     # More capable model for better responses
+FALLBACK_MODEL="llama3.2:1b"    # Lightweight fallback
 MAX_RETRIES=30
 RETRY_DELAY=5
 
@@ -20,8 +21,22 @@ check_ollama_ready() {
 
 # Function to check if model exists
 check_model_exists() {
+    local model_name=$1
     local models=$(curl -s "${OLLAMA_URL}/api/tags" | grep -o '"models":\[[^]]*\]')
-    echo "$models" | grep -q "$MODEL_NAME"
+    echo "$models" | grep -q "$model_name"
+}
+
+# Function to pull model with error handling
+pull_model() {
+    local model_name=$1
+    echo "📥 Pulling model: $model_name..."
+    if docker compose exec ollama ollama pull "$model_name"; then
+        echo "✅ Successfully pulled model $model_name"
+        return 0
+    else
+        echo "❌ Failed to pull model $model_name"
+        return 1
+    fi
 }
 
 # Wait for Ollama to be ready
@@ -40,20 +55,43 @@ done
 
 echo "✅ Ollama is ready!"
 
-# Check if model already exists
-if check_model_exists; then
-    echo "✅ Model $MODEL_NAME already exists, skipping pull."
+# Check for and pull models
+models_pulled=0
+
+# Try to pull primary model (more capable)
+if check_model_exists "$PRIMARY_MODEL"; then
+    echo "✅ Primary model $PRIMARY_MODEL already exists"
+    models_pulled=$((models_pulled + 1))
 else
-    echo "📥 Model $MODEL_NAME not found, pulling..."
-    if docker compose exec ollama ollama pull "$MODEL_NAME"; then
-        echo "✅ Successfully pulled model $MODEL_NAME"
+    echo "📥 Primary model $PRIMARY_MODEL not found, attempting to pull..."
+    if pull_model "$PRIMARY_MODEL"; then
+        models_pulled=$((models_pulled + 1))
     else
-        echo "❌ Failed to pull model $MODEL_NAME"
-        exit 1
+        echo "⚠️ Failed to pull primary model, will try fallback model"
     fi
 fi
 
-echo "🎉 Ollama initialization complete!"
+# Try to pull fallback model if primary failed or as backup
+if check_model_exists "$FALLBACK_MODEL"; then
+    echo "✅ Fallback model $FALLBACK_MODEL already exists"
+    models_pulled=$((models_pulled + 1))
+else
+    echo "📥 Fallback model $FALLBACK_MODEL not found, attempting to pull..."
+    if pull_model "$FALLBACK_MODEL"; then
+        models_pulled=$((models_pulled + 1))
+    else
+        echo "❌ Failed to pull fallback model"
+    fi
+fi
+
+# Check results
+if [ $models_pulled -eq 0 ]; then
+    echo "❌ No models were successfully pulled!"
+    exit 1
+else
+    echo "🎉 Ollama initialization complete! ($models_pulled model(s) available)"
+fi
+
 echo "💡 Available models:"
 curl -s "${OLLAMA_URL}/api/tags" | jq -r '.models[].name' 2>/dev/null || echo "jq not available, using raw output:"
 curl -s "${OLLAMA_URL}/api/tags" 

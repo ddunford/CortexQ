@@ -16,7 +16,8 @@ import {
 import Card, { CardHeader, CardTitle, CardContent } from '../ui/Card';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
-import { apiClient } from '../../utils/api';
+import { Organization, Member } from '../../types';
+import { api } from '../../utils/api';
 
 interface Member {
   id: string;
@@ -56,7 +57,7 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ organizationId, onClose
 
   const checkConnection = async () => {
     try {
-      const response = await apiClient.getHealthStatus();
+      const response = await api.getHealthStatus();
       setConnectionStatus(response.success ? 'connected' : 'disconnected');
     } catch (error) {
       setConnectionStatus('disconnected');
@@ -67,7 +68,7 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ organizationId, onClose
     setLoading(true);
     setError(null);
     try {
-      const response = await apiClient.getOrganizationMembers(organizationId);
+      const response = await api.getOrganizationMembers(organizationId);
       if (response.success) {
         setMembers(response.data);
         setConnectionStatus('connected');
@@ -99,7 +100,7 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ organizationId, onClose
     setError(null);
     
     try {
-      const response = await apiClient.inviteOrganizationMember(organizationId, {
+      const response = await api.inviteOrganizationMember(organizationId, {
         email: inviteEmail,
         role: inviteRole,
       });
@@ -126,7 +127,7 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ organizationId, onClose
 
   const handleUpdateRole = async (memberId: string, role: string) => {
     try {
-      const response = await apiClient.updateOrganizationMember(organizationId, memberId, role);
+      const response = await api.updateOrganizationMember(organizationId, memberId, role);
       if (response.success) {
         setMembers(prev => prev.map(member => 
           member.id === memberId ? { ...member, role } : member
@@ -151,7 +152,7 @@ const TeamManagement: React.FC<TeamManagementProps> = ({ organizationId, onClose
     }
 
     try {
-      const response = await apiClient.removeOrganizationMember(organizationId, memberId);
+      const response = await api.removeOrganizationMember(organizationId, memberId);
       if (response.success) {
         setMembers(prev => prev.filter(member => member.id !== memberId));
         setSuccess('Member removed successfully');

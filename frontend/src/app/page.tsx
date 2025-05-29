@@ -24,7 +24,7 @@ import UserProfile from '../components/auth/UserProfile';
 import DomainCreationWizard from '../components/domains/DomainCreationWizard';
 import DomainWorkspace from '../components/workspace/DomainWorkspace';
 import { User as UserType, Organization, Domain } from '../types';
-import { apiClient } from '../utils/api';
+import { api } from '../utils/api';
 
 type ViewType = 'organization' | 'domain-workspace' | 'create-domain';
 
@@ -57,14 +57,14 @@ export default function HomePage() {
 
   useEffect(() => {
     // Set up the unauthorized handler to log out on 401 responses
-    apiClient.setUnauthorizedHandler(() => {
+    api.setUnauthorizedHandler(() => {
       console.log('401 Unauthorized detected - logging out...');
       logout();
     });
 
     const token = localStorage.getItem('cortexq_token') || localStorage.getItem('rag_token');
     if (token) {
-      apiClient.setToken(token);
+      api.setToken(token);
       setIsAuthenticated(true);
       loadUserData();
     }
@@ -87,19 +87,19 @@ export default function HomePage() {
   const loadUserData = async () => {
     setState(prev => ({ ...prev, loading: true }));
     try {
-      const userResponse = await apiClient.getCurrentUser();
+      const userResponse = await api.getCurrentUser();
       if (userResponse.success) {
         const user = userResponse.data;
         setState(prev => ({ ...prev, user }));
 
         // Load organizations - get the first one or create one
-        const orgsResponse = await apiClient.getOrganizations();
+        const orgsResponse = await api.getOrganizations();
         if (orgsResponse.success && orgsResponse.data.length > 0) {
           const organization = orgsResponse.data[0];
           setState(prev => ({ ...prev, organization }));
 
           // Load domains
-          const domainsResponse = await apiClient.getDomains(organization.id);
+          const domainsResponse = await api.getDomains(organization.id);
           if (domainsResponse.success) {
             setState(prev => ({ ...prev, domains: domainsResponse.data }));
           }
@@ -122,9 +122,9 @@ export default function HomePage() {
 
   const login = async (email: string, password: string) => {
     try {
-      const response = await apiClient.login(email, password);
+      const response = await api.login(email, password);
       if (response.success) {
-        apiClient.setToken(response.data.access_token);
+        api.setToken(response.data.access_token);
         setIsAuthenticated(true);
         loadUserData();
       }
@@ -134,7 +134,7 @@ export default function HomePage() {
   };
 
   const logout = () => {
-    apiClient.clearToken();
+    api.clearToken();
     setIsAuthenticated(false);
     setState({
       currentView: 'organization',
@@ -545,7 +545,7 @@ function LoginForm({ onLogin }: { onLogin: (email: string, password: string) => 
     try {
       if (isRegister) {
         // Handle registration (email as primary identifier)
-        const response = await apiClient.register({
+        const response = await api.register({
           email,
           password,
         });
