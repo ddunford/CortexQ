@@ -167,7 +167,7 @@ async def search(
         # Execute search
         if len(search_domains) == 1:
             # Single domain search
-            search_results = rag_processor.vector_store.search(
+            search_results = await rag_processor.vector_store.search(
                 request.query, 
                 search_domains[0], 
                 request.limit, 
@@ -176,7 +176,7 @@ async def search(
             )
         else:
             # Multi-domain search
-            cross_results = rag_processor.vector_store.cross_domain_search(
+            cross_results = await rag_processor.vector_store.cross_domain_search(
                 request.query, 
                 search_domains, 
                 request.limit, 
