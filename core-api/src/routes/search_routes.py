@@ -121,21 +121,38 @@ async def search(
             # Get all accessible domains for user from organization_domains
             domain_result = db.execute(
                 text("""
-                    SELECT DISTINCT od.domain_name
+                    SELECT DISTINCT od.id as domain_id
                     FROM organization_domains od
                     WHERE od.organization_id = :organization_id
                     AND od.is_active = true
                 """),
                 {"organization_id": organization_id}
             )
-            search_domains = [row.domain_name for row in domain_result.fetchall()]
+            search_domains = [str(row.domain_id) for row in domain_result.fetchall()]
         
-        if not search_domains:
+        # Convert domain IDs to domain names for vector store search
+        # The vector store expects domain names, but we work with domain IDs in the API
+        domain_names_for_search = []
+        if search_domains:
+            for domain_id in search_domains:
+                # Get domain name from domain ID
+                domain_lookup = db.execute(
+                    text("""
+                        SELECT domain_name FROM organization_domains 
+                        WHERE id = :domain_id AND organization_id = :organization_id AND is_active = true
+                    """),
+                    {"domain_id": domain_id, "organization_id": organization_id}
+                ).fetchone()
+                
+                if domain_lookup:
+                    domain_names_for_search.append(domain_lookup.domain_name)
+        
+        if not domain_names_for_search:
             return SearchResponse(
                 results=[],
                 total_found=0,
                 query=request.query,
-                domains_searched=[],
+                domains_searched=search_domains,  # Return original domain IDs
                 search_time_ms=int((time.time() - start_time) * 1000),
                 filters_applied=request.filters
             )
@@ -153,10 +170,10 @@ async def search(
         }
         rag_mode = mode_mapping.get(request.mode, RAGMode.HYBRID)
         
-        # Create RAG request
+        # Create RAG request using domain name for the vector store
         rag_request = RAGRequest(
             query=request.query,
-            domain=search_domains[0] if search_domains else "general",
+            domain=domain_names_for_search[0] if domain_names_for_search else "general",
             mode=rag_mode,
             max_results=request.limit,
             confidence_threshold=request.min_confidence,
@@ -164,12 +181,12 @@ async def search(
             organization_id=organization_id
         )
         
-        # Execute search
-        if len(search_domains) == 1:
+        # Execute search using domain names for vector store
+        if len(domain_names_for_search) == 1:
             # Single domain search
             search_results = await rag_processor.vector_store.search(
                 request.query, 
-                search_domains[0], 
+                domain_names_for_search[0], 
                 request.limit, 
                 request.min_confidence,
                 organization_id
@@ -178,7 +195,7 @@ async def search(
             # Multi-domain search
             cross_results = await rag_processor.vector_store.cross_domain_search(
                 request.query, 
-                search_domains, 
+                domain_names_for_search, 
                 request.limit, 
                 request.min_confidence,
                 organization_id
@@ -206,15 +223,29 @@ async def search(
         if request.include_content_types:
             content_type_filters = request.include_content_types
         
+        # Add web content types to the filters (since web pages are stored as text/html)
+        if request.include_content_types and "web/crawled" in request.include_content_types:
+            content_type_filters.extend(["text/html", "web/crawled"])
+        
         # Apply content type filtering
         if content_type_filters or request.exclude_content_types:
             filtered_results = []
             for result in search_results:
                 content_type = result.metadata.get("content_type", "").lower()
                 
+                # Special mapping for web content
+                if content_type == "text/html":
+                    # Map text/html to web/crawled for filtering purposes
+                    content_type_for_filtering = "web/crawled"
+                else:
+                    content_type_for_filtering = content_type
+                
                 # Include filter
                 if content_type_filters:
-                    if not any(ct.lower() in content_type for ct in content_type_filters):
+                    # Check both original content type and mapped type
+                    type_matches = any(ct.lower() in content_type for ct in content_type_filters) or \
+                                  any(ct.lower() in content_type_for_filtering for ct in content_type_filters)
+                    if not type_matches:
                         continue
                 
                 # Exclude filter
@@ -264,10 +295,10 @@ async def search(
         # Log search activity
         AuditLogger.log_event(
             db, "search", current_user["id"], "search", "execute",
-            f"Searched '{request.query}' in domains: {', '.join(search_domains)}",
+            f"Searched '{request.query}' in domains: {', '.join(domain_names_for_search)}",
             {
                 "query": request.query,
-                "domains": search_domains,
+                "domains": domain_names_for_search,
                 "results_count": len(response_results),
                 "mode": request.mode
             }
@@ -279,7 +310,7 @@ async def search(
             results=response_results,
             total_found=len(response_results),
             query=request.query,
-            domains_searched=search_domains,
+            domains_searched=search_domains,  # Return domain IDs to frontend
             search_time_ms=search_time_ms,
             filters_applied=request.filters
         )
