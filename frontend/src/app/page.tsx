@@ -12,7 +12,11 @@ import {
   Settings,
   Bell,
   Search,
-  ChevronDown
+  ChevronDown,
+  MessageCircle,
+  Database,
+  BarChart3,
+  Shield
 } from 'lucide-react';
 import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';
@@ -31,6 +35,7 @@ type ViewType = 'organization' | 'domain-workspace' | 'create-domain';
 interface AppState {
   currentView: ViewType;
   selectedDomain?: Domain;
+  activeDomainSection?: 'chat' | 'sources' | 'analytics' | 'audit' | 'settings';
   user?: UserType;
   organization?: Organization;
   domains: Domain[];
@@ -46,9 +51,10 @@ export default function HomePage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [state, setState] = useState<AppState>({
     currentView: 'organization',
+    activeDomainSection: 'chat',
     domains: [],
     sidebarOpen: true,
-    loading: false,
+    loading: true,
     showTeamManagement: false,
     showOrganizationSettings: false,
     showUserProfile: false,
@@ -166,6 +172,14 @@ export default function HomePage() {
       ...prev,
       currentView: 'domain-workspace',
       selectedDomain: domain,
+      activeDomainSection: 'chat'
+    }));
+  };
+
+  const handleDomainSectionChange = (section: 'chat' | 'sources' | 'analytics' | 'audit' | 'settings') => {
+    setState(prev => ({
+      ...prev,
+      activeDomainSection: section
     }));
   };
 
@@ -174,6 +188,7 @@ export default function HomePage() {
       ...prev,
       currentView: 'organization',
       selectedDomain: undefined,
+      activeDomainSection: 'chat'
     }));
   };
 
@@ -291,7 +306,7 @@ export default function HomePage() {
                     key={domain.id}
                     onClick={() => handleSelectDomain(domain)}
                     className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 group ${
-                      state.selectedDomain?.id === domain.id
+                      state.selectedDomain?.id === domain.id && state.currentView === 'domain-workspace'
                         ? 'bg-cortex-grey text-cortex-primary shadow-sm border border-cortex-primary/20'
                         : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                     }`}
@@ -301,10 +316,47 @@ export default function HomePage() {
                     </div>
                     <div className="ml-3 text-left">
                       <p className="text-sm font-medium">{domain.display_name || domain.name}</p>
-                                              <p className="text-xs text-gray-500 capitalize">{domain.is_active ? 'active' : 'inactive'}</p>
+                      <p className="text-xs text-gray-500 capitalize">{domain.is_active ? 'active' : 'inactive'}</p>
                     </div>
                   </button>
                 ))}
+                
+                {/* Domain Sub-Navigation */}
+                {state.selectedDomain && state.currentView === 'domain-workspace' && (
+                  <div className="mt-4 pt-4 border-t border-gray-100">
+                    <div className="px-4 py-2">
+                      <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                        {state.selectedDomain.display_name || state.selectedDomain.name} Options
+                      </h4>
+                    </div>
+                    <div className="space-y-1">
+                      {[
+                        { id: 'chat', label: 'AI Assistant', icon: MessageCircle, description: 'Chat with domain AI' },
+                        { id: 'sources', label: 'Data Sources', icon: Database, description: 'Files and integrations' },
+                        { id: 'analytics', label: 'Analytics', icon: BarChart3, description: 'Usage insights' },
+                        { id: 'audit', label: 'Audit', icon: Shield, description: 'Activity logs' },
+                        { id: 'settings', label: 'Settings', icon: Settings, description: 'Domain configuration' },
+                      ].map((section) => (
+                        <button
+                          key={section.id}
+                          onClick={() => handleDomainSectionChange(section.id as any)}
+                          className={`w-full flex items-center px-6 py-2 rounded-lg transition-all duration-200 group ${
+                            state.activeDomainSection === section.id
+                              ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                          }`}
+                        >
+                          <section.icon className={`h-4 w-4 flex-shrink-0 ${
+                            state.activeDomainSection === section.id ? 'text-blue-600' : 'text-gray-400'
+                          }`} />
+                          <div className="ml-3 text-left">
+                            <p className="text-sm font-medium">{section.label}</p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 
                 {state.domains.length === 0 && (
                   <div className="px-4 py-8 text-center">
@@ -477,6 +529,8 @@ export default function HomePage() {
         return state.selectedDomain ? (
           <DomainWorkspace
             domain={state.selectedDomain}
+            activeSection={state.activeDomainSection}
+            onSectionChange={handleDomainSectionChange}
             onEditDomain={() => {}}
             onDeleteDomain={() => {}}
           />

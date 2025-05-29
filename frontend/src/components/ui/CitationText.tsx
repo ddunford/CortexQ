@@ -249,9 +249,12 @@ const CitationText: React.FC<CitationTextProps> = ({ content, sources = [], clas
     let match;
     
     while ((match = citeRegex.exec(htmlContent)) !== null) {
-      // Add text before citation
+      // Add text before citation (may contain HTML like img tags)
       if (match.index > lastIndex) {
-        parts.push(htmlContent.slice(lastIndex, match.index));
+        const textPart = htmlContent.slice(lastIndex, match.index);
+        if (textPart.trim()) {
+          parts.push(textPart);
+        }
       }
       
       // Add citation object
@@ -264,9 +267,17 @@ const CitationText: React.FC<CitationTextProps> = ({ content, sources = [], clas
       lastIndex = match.index + match[0].length;
     }
     
-    // Add remaining text
+    // Add remaining text (may contain HTML like img tags)
     if (lastIndex < htmlContent.length) {
-      parts.push(htmlContent.slice(lastIndex));
+      const remainingText = htmlContent.slice(lastIndex);
+      if (remainingText.trim()) {
+        parts.push(remainingText);
+      }
+    }
+    
+    // If no citations were found, return the whole content as one part
+    if (parts.length === 0) {
+      parts.push(htmlContent);
     }
     
     return parts;
@@ -291,7 +302,20 @@ const CitationText: React.FC<CitationTextProps> = ({ content, sources = [], clas
       <div className={`${className} whitespace-pre-wrap`}>
         {parts.map((part, index) => {
           if (typeof part === 'string') {
-            return <span key={index}>{part}</span>;
+            // Check if the part contains HTML img tags
+            if (part.includes('<img')) {
+              // Safely render HTML content with images
+              return (
+                <div
+                  key={index}
+                  dangerouslySetInnerHTML={{ __html: part }}
+                  className="inline"
+                />
+              );
+            } else {
+              // Regular text content
+              return <span key={index}>{part}</span>;
+            }
           } else {
             // It's a citation
             const source = sources[part.sourceIndex];

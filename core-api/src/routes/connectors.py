@@ -3896,3 +3896,213 @@ async def regenerate_embeddings(
     except Exception as e:
         logger.error(f"Error starting embedding regeneration: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to start embedding regeneration: {str(e)}")
+
+
+@router.post("/{connector_id}/update-visual-content", response_model=Dict[str, Any])
+async def update_embeddings_with_visual_content(
+    domain_id: str,
+    connector_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("connectors:write"))
+):
+    """Update existing embeddings to include visual content metadata"""
+    # Get user's organization
+    org_result = db.execute(
+        text("""
+            SELECT om.organization_id, od.domain_name
+            FROM organization_members om
+            JOIN organization_domains od ON om.organization_id = od.organization_id
+            WHERE om.user_id = :user_id AND om.is_active = true AND od.id = :domain_id
+            LIMIT 1
+        """),
+        {"user_id": current_user["id"], "domain_id": domain_id}
+    ).fetchone()
+    
+    if not org_result:
+        raise HTTPException(status_code=403, detail="User not associated with this domain")
+    
+    organization_id = str(org_result.organization_id)
+    domain_name = org_result.domain_name
+    
+    # Get connector
+    connector = db.execute(
+        text("""
+            SELECT * FROM connectors 
+            WHERE id = :connector_id AND organization_id = :org_id
+        """),
+        {"connector_id": connector_id, "org_id": organization_id}
+    ).fetchone()
+    
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    
+    if connector.connector_type != "web_scraper":
+        raise HTTPException(status_code=400, detail="This endpoint is only for web scraper connectors")
+    
+    try:
+        # Import and create connector instance
+        from connectors.web_scraper_connector import WebScraperConnector
+        from services.base_connector import ConnectorConfig
+        
+        config = ConnectorConfig(
+            id=str(connector.id),
+            name=connector.name,
+            connector_type=connector.connector_type,
+            organization_id=organization_id,
+            domain=domain_name,
+            auth_config=connector.auth_config or {},
+            sync_config=connector.sync_config or {},
+            mapping_config=connector.mapping_config or {},
+            is_enabled=connector.is_enabled
+        )
+        
+        scraper = WebScraperConnector(config)
+        
+        # Check if there are any pages with visual content needing updates
+        pages_count = db.execute(
+            text("""
+                SELECT COUNT(*) as count 
+                FROM crawled_pages cp
+                JOIN embeddings e ON e.source_id = cp.id 
+                    AND e.source_type = 'web_page'
+                    AND e.organization_id = :org_id
+                WHERE cp.organization_id = :org_id 
+                    AND cp.connector_id = :connector_id
+                    AND cp.content IS NOT NULL 
+                    AND cp.metadata IS NOT NULL
+                    AND cp.metadata::text LIKE '%visual_content%'
+                    AND (e.metadata IS NULL OR e.metadata::text NOT LIKE '%visual_content%')
+            """),
+            {
+                "org_id": organization_id,
+                "connector_id": connector_id
+            }
+        ).fetchone()
+        
+        if not pages_count or pages_count.count == 0:
+            return {
+                "success": True,
+                "message": "No pages found that need visual content updates",
+                "updated": 0
+            }
+        
+        # Create sync job for tracking
+        sync_job_id = str(uuid.uuid4())
+        
+        # Prepare metadata as JSON string for JSONB column
+        import json
+        metadata_json = json.dumps({
+            "triggered_by": current_user["id"],
+            "operation": "update_visual_content",
+            "total_items": pages_count.count,
+            "processed_items": 0
+        })
+        
+        db.execute(
+            text("""
+                INSERT INTO sync_jobs (
+                    id, connector_id, organization_id, status, 
+                    started_at, total_items, metadata
+                ) VALUES (
+                    :sync_job_id, :connector_id, :org_id, 'running',
+                    NOW(), :total_items, :metadata
+                )
+            """),
+            {
+                "sync_job_id": sync_job_id,
+                "connector_id": connector_id,
+                "org_id": organization_id,
+                "total_items": pages_count.count,
+                "metadata": metadata_json
+            }
+        )
+        db.commit()
+        
+        # Run visual content update in background
+        def run_visual_content_update():
+            import asyncio
+            async def update_task():
+                try:
+                    result = await scraper.regenerate_embeddings_with_visual_content()
+                    
+                    # Update sync job status
+                    from dependencies import get_db
+                    db = next(get_db())
+                    
+                    # Prepare metadata as JSON string for JSONB column
+                    completed_metadata_json = json.dumps({
+                        "triggered_by": current_user["id"],
+                        "operation": "update_visual_content",
+                        "total_items": result.get("total_pages", 0),
+                        "processed_items": result.get("processed", 0),
+                        "updated_embeddings": result.get("updated", 0),
+                        "errors": result.get("errors", 0),
+                        "progress_percentage": 100
+                    })
+                    
+                    status = "completed" if result.get("errors", 0) == 0 else "completed_with_errors"
+                    
+                    db.execute(
+                        text("""
+                            UPDATE sync_jobs 
+                            SET status = :status, 
+                                completed_at = NOW(),
+                                records_processed = :records_processed,
+                                records_updated = :records_updated,
+                                metadata = :metadata
+                            WHERE id = :sync_job_id
+                        """),
+                        {
+                            "sync_job_id": sync_job_id,
+                            "status": status,
+                            "records_processed": result.get("processed", 0),
+                            "records_updated": result.get("updated", 0),
+                            "metadata": completed_metadata_json
+                        }
+                    )
+                    db.commit()
+                    
+                except Exception as e:
+                    logger.error(f"Background visual content update failed: {e}")
+                    # Update sync job with error
+                    from dependencies import get_db
+                    db = next(get_db())
+                    db.execute(
+                        text("""
+                            UPDATE sync_jobs 
+                            SET status = 'failed', 
+                                completed_at = NOW(),
+                                error_message = :error_message
+                            WHERE id = :sync_job_id
+                        """),
+                        {
+                            "sync_job_id": sync_job_id,
+                            "error_message": str(e)
+                        }
+                    )
+                    db.commit()
+            
+            asyncio.run(update_task())
+        
+        background_tasks.add_task(run_visual_content_update)
+        
+        # Log the visual content update action
+        AuditLogger.log_event(
+            db, "web_scraper_update_visual_content", current_user["id"], "connectors", "update_visual_content",
+            f"Visual content update started for connector {connector.name}",
+            {"connector_id": connector_id, "sync_job_id": sync_job_id}
+        )
+        
+        return {
+            "success": True,
+            "message": "Visual content update started",
+            "sync_job_id": sync_job_id,
+            "estimated_pages": pages_count.count
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting visual content update: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start visual content update: {str(e)}")

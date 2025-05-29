@@ -9,12 +9,21 @@ import json
 import hashlib
 import logging
 import time
+import base64
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from urllib.parse import urljoin, urlparse, urlunparse, parse_qs
 import xml.etree.ElementTree as ET
 
 from bs4 import BeautifulSoup
+
+# Add screenshot dependencies
+try:
+    from pyppeteer import launch
+    SCREENSHOT_AVAILABLE = True
+except ImportError:
+    SCREENSHOT_AVAILABLE = False
+    print("⚠️  pyppeteer not available - screenshots disabled")
 
 from services.base_connector import BaseConnector, ConnectorConfig, Document, SyncResult
 
@@ -348,6 +357,28 @@ class WebScraperConnector(BaseConnector):
                 # Extract content
                 text_content = self._extract_text(soup)
                 metadata = self._extract_metadata(soup, url)
+                
+                # Extract embedded images from the guide
+                images_data = await self._extract_page_images(html, url, session)
+                
+                # Add image information to metadata
+                if images_data and (images_data.get('images') or images_data.get('screenshots')):
+                    metadata['visual_content'] = images_data
+                    
+                    # Add enhanced image descriptions to text content for better searchability
+                    image_descriptions = []
+                    for img in images_data.get('screenshots', []) + images_data.get('images', []):
+                        if img.get('vision_analyzed') and img.get('enhanced_description'):
+                            # Use the enhanced vision-analyzed description
+                            content_type = img.get('content_type_detected', 'interface')
+                            description = img.get('enhanced_description', '')
+                            image_descriptions.append(f"[{content_type.replace('_', ' ').title()}]: {description}")
+                        elif img.get('alt_text'):
+                            # Fallback to original alt_text
+                            image_descriptions.append(f"[Image: {img['alt_text']}]")
+                    
+                    if image_descriptions:
+                        text_content += "\n\nVisual content in this page:\n" + "\n".join(image_descriptions)
                 
                 return {
                     'url': url,
@@ -718,6 +749,42 @@ class WebScraperConnector(BaseConnector):
                     else:
                         embedding_list = list(embedding_vector)
                     
+                    # Build metadata for embedding
+                    metadata = {
+                        "title": title,
+                        "url": page_data['url'],
+                        "word_count": page_data.get('word_count', 0),
+                        "scraped_at": page_data.get('scraped_at'),
+                        "connector_id": self.config.id,
+                        "content_type": "web_page"
+                    }
+                    
+                    # Add visual content if available
+                    page_metadata = page_data.get('metadata', {})
+                    visual_content = page_metadata.get('visual_content', {})
+                    
+                    if visual_content and (visual_content.get('screenshots') or visual_content.get('images')):
+                        metadata['visual_content'] = visual_content
+                        logger.debug(f"📸 Including visual content in embedding metadata: {len(visual_content.get('screenshots', []))} screenshots, {len(visual_content.get('images', []))} images")
+                    
+                    # Delete any existing embeddings for this URL to avoid duplicates
+                    deleted_count = db.execute(
+                        text("""
+                            DELETE FROM embeddings 
+                            WHERE organization_id = :org_id 
+                            AND source_type = 'web_page'
+                            AND metadata->>'url' = :url
+                        """),
+                        {
+                            "org_id": self.config.organization_id,
+                            "url": page_data['url']
+                        }
+                    ).rowcount
+                    
+                    if deleted_count > 0:
+                        logger.debug(f"🗑️ Deleted {deleted_count} old embeddings for URL: {page_data['url']}")
+                    
+                    # Insert new embedding
                     db.execute(
                         text("""
                             INSERT INTO embeddings 
@@ -735,14 +802,7 @@ class WebScraperConnector(BaseConnector):
                             "source_id": crawled_page_id,  # Use actual crawled_pages ID
                             "content_text": combined_text,
                             "embedding": embedding_list,  # Use list format for vector column
-                            "metadata": json.dumps({
-                                "title": title,
-                                "url": page_data['url'],
-                                "word_count": page_data.get('word_count', 0),
-                                "scraped_at": page_data.get('scraped_at'),
-                                "connector_id": self.config.id,
-                                "content_type": "web_page"
-                            }),
+                            "metadata": json.dumps(metadata),
                             "embedding_model": settings.EMBEDDING_MODEL
                         }
                     )
@@ -951,4 +1011,373 @@ class WebScraperConnector(BaseConnector):
             
         except Exception as e:
             logger.error(f"❌ Failed to regenerate embeddings: {e}")
-            return {"error": str(e), "processed": 0, "created": 0, "errors": 0} 
+            return {"error": str(e), "processed": 0, "created": 0, "errors": 0}
+
+    async def _extract_page_images(self, html: str, page_url: str, session: aiohttp.ClientSession) -> Dict[str, Any]:
+        """Extract and download images embedded in the web page with vision analysis"""
+        try:
+            from ingestion.visual_extractor import VisualContentExtractor
+            from vision_analyzer import get_vision_analyzer
+            
+            # Use the existing visual extractor for initial image discovery
+            extractor = VisualContentExtractor()
+            initial_extraction = extractor._extract_html_images(html)
+            
+            # Get vision analyzer for intelligent image analysis
+            vision_analyzer = get_vision_analyzer()
+            
+            # Download and store the actual images
+            processed_images = []
+            processed_screenshots = []
+            
+            # Combine all image candidates
+            all_candidates = initial_extraction.get('images', []) + initial_extraction.get('screenshots', [])
+            
+            for img_info in all_candidates[:10]:
+                try:
+                    img_url = img_info.get('src', '')
+                    if not img_url:
+                        continue
+                    
+                    # Make absolute URL
+                    if img_url.startswith('//'):
+                        img_url = 'https:' + img_url
+                    elif img_url.startswith('/'):
+                        img_url = urljoin(page_url, img_url)
+                    elif not img_url.startswith(('http://', 'https://')):
+                        img_url = urljoin(page_url, img_url)
+                    
+                    # Download the image
+                    async with session.get(img_url, timeout=aiohttp.ClientTimeout(total=15)) as img_response:
+                        if img_response.status == 200:
+                            img_content = await img_response.read()
+                            
+                            # Skip very large images (>2MB)
+                            if len(img_content) > 2 * 1024 * 1024:
+                                continue
+                            
+                            # Skip very small images (likely icons)
+                            if len(img_content) < 1024:
+                                continue
+                                
+                            # Get content type
+                            img_content_type = img_response.headers.get('content-type', '')
+                            if not img_content_type.startswith('image/'):
+                                continue
+                            
+                            # VISION ANALYSIS: Analyze image at ingestion time
+                            vision_analysis = None
+                            if vision_analyzer and vision_analyzer.available:
+                                try:
+                                    print(f"🔍 INGESTION: Analyzing image {img_url} with vision model")
+                                    context_hint = f"Image from {page_url}: {img_info.get('alt_text', '')}"
+                                    vision_analysis = vision_analyzer.analyze_image(img_content, context_hint)
+                                    print(f"✅ INGESTION: Vision analysis complete - detected: {vision_analysis.get('content_type', 'unknown')}")
+                                except Exception as e:
+                                    print(f"❌ INGESTION: Vision analysis failed: {e}")
+                                    vision_analysis = None
+                            
+                            # Store image in file storage
+                            stored_url = await self._store_image(img_content, img_url, img_content_type)
+                            
+                            if stored_url:
+                                # Enhanced image info with vision analysis
+                                enhanced_img_info = {
+                                    **img_info,
+                                    'stored_url': stored_url,
+                                    'original_url': img_url,
+                                    'content_type': img_content_type,
+                                    'size_bytes': len(img_content),
+                                    'downloaded_at': datetime.utcnow().isoformat()
+                                }
+                                
+                                # Add vision analysis results if available
+                                if vision_analysis:
+                                    enhanced_img_info.update({
+                                        'enhanced_description': vision_analysis['description'],
+                                        'content_type_detected': vision_analysis['content_type'],
+                                        'context_tags': vision_analysis['context_tags'],
+                                        'ui_elements': vision_analysis['ui_elements'],
+                                        'vision_analyzed': True,
+                                        'vision_analyzed_at': datetime.utcnow().isoformat()
+                                    })
+                                    
+                                    # Store image description embedding in the main embeddings table for efficient search
+                                    try:
+                                        from main import embeddings_model
+                                        if embeddings_model and vision_analysis['description']:
+                                            description_embedding = embeddings_model.encode([vision_analysis['description']])[0]
+                                            
+                                            # Store in embeddings table (polymorphic approach)
+                                            await self._store_image_description_embedding(
+                                                enhanced_img_info, 
+                                                vision_analysis['description'],
+                                                description_embedding,
+                                                page_url
+                                            )
+                                            
+                                            logger.debug(f"📊 Stored image description embedding: {vision_analysis['description'][:50]}...")
+                                    except Exception as e:
+                                        logger.warning(f"⚠️  Failed to store image description embedding: {e}")
+                                    
+                                    # Update alt_text with more descriptive version
+                                    if vision_analysis['content_type'] != 'unknown':
+                                        content_type_name = vision_analysis['content_type'].replace('_', ' ').title()
+                                        description_preview = vision_analysis['description'][:80] + "..." if len(vision_analysis['description']) > 80 else vision_analysis['description']
+                                        enhanced_img_info['alt_text'] = f"{content_type_name}: {description_preview}"
+                                    
+                                    # Use vision analysis to determine if it's a screenshot
+                                    if vision_analysis['content_type'] in ['login_page', 'dashboard', 'form', 'settings', 'navigation']:
+                                        enhanced_img_info['type'] = 'screenshot'
+                                    elif 'interface' in vision_analysis.get('context_tags', []):
+                                        enhanced_img_info['type'] = 'screenshot'
+                                    else:
+                                        enhanced_img_info['type'] = 'image'
+                                else:
+                                    enhanced_img_info['vision_analyzed'] = False
+                                
+                                if enhanced_img_info.get('type') == 'screenshot':
+                                    processed_screenshots.append(enhanced_img_info)
+                                else:
+                                    processed_images.append(enhanced_img_info)
+                                    
+                                logger.debug(f"📸 Downloaded and analyzed image: {img_url} -> {stored_url}")
+                        
+                except Exception as e:
+                    logger.debug(f"❌ Failed to download/analyze image {img_info.get('src', 'unknown')}: {e}")
+                    continue
+            
+            if processed_images or processed_screenshots:
+                vision_count = sum(1 for img in (processed_images + processed_screenshots) if img.get('vision_analyzed'))
+                logger.info(f"📸 INGESTION: Extracted {len(processed_screenshots)} screenshots and {len(processed_images)} images from {page_url} (vision analyzed: {vision_count})")
+            
+            return {
+                'images': processed_images,
+                'screenshots': processed_screenshots,
+                'extraction_method': 'web_download_with_vision',
+                'total_processed': len(processed_images) + len(processed_screenshots),
+                'vision_analyzed_count': sum(1 for img in (processed_images + processed_screenshots) if img.get('vision_analyzed'))
+            }
+            
+        except ImportError:
+            logger.warning("⚠️  VisualContentExtractor not available - images not extracted")
+            return {'images': [], 'screenshots': [], 'extraction_method': 'unavailable'}
+        except Exception as e:
+            logger.error(f"❌ Failed to extract images from {page_url}: {e}")
+            return {'images': [], 'screenshots': [], 'extraction_method': 'failed'}
+
+    async def _store_image(self, img_content: bytes, original_url: str, content_type: str) -> Optional[str]:
+        """Store downloaded image in file storage and return the stored URL"""
+        try:
+            from storage_utils import minio_storage
+            from dependencies import get_db
+            from sqlalchemy import text
+            import hashlib
+            
+            # Get organization slug from database
+            db = next(get_db())
+            org_result = db.execute(
+                text("SELECT slug FROM organizations WHERE id = :org_id"),
+                {"org_id": self.config.organization_id}
+            ).fetchone()
+            
+            org_slug = org_result.slug if org_result else 'default'
+            domain = getattr(self.config, 'domain', 'general')
+            
+            # Generate unique filename
+            url_hash = hashlib.md5(original_url.encode()).hexdigest()[:16]
+            file_extension = content_type.split('/')[-1] if '/' in content_type else 'jpg'
+            filename = f"web_image_{url_hash}.{file_extension}"
+            
+            # Generate unique file ID
+            file_id = f"img_{url_hash}"
+            
+            # Upload to storage using the correct API
+            upload_result = await minio_storage.upload_file(
+                file_content=img_content,
+                organization_slug=org_slug,
+                domain=domain,
+                file_id=file_id,
+                filename=filename,
+                content_type=content_type,
+                metadata={
+                    'source_type': 'web_image',
+                    'original_url': original_url,
+                    'connector_id': self.config.id
+                }
+            )
+            
+            if upload_result.get('success'):
+                stored_url = upload_result.get('url') or minio_storage.get_file_url(upload_result.get('object_key'))
+                logger.debug(f"📸 Stored image: {filename} -> {stored_url}")
+                return stored_url
+            else:
+                logger.warning(f"⚠️  Failed to store image {filename}: {upload_result.get('error')}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to store image: {e}")
+            return None
+
+    async def _store_image_description_embedding(self, img_info: Dict[str, Any], description: str, embedding: List[float], page_url: str) -> None:
+        """Store image description embedding in the main embeddings table for efficient search"""
+        try:
+            from dependencies import get_db
+            from sqlalchemy import text
+            import json
+            
+            db = next(get_db())
+            
+            # Generate unique embedding ID
+            embedding_id = str(uuid.uuid4())
+            
+            # Generate a proper UUID for source_id since these are standalone image description embeddings
+            image_source_id = str(uuid.uuid4())
+            
+            # Build metadata for embedding
+            metadata = {
+                "title": img_info.get('title', 'Untitled'),
+                "url": page_url,
+                "word_count": len(description.split()),
+                "scraped_at": img_info.get('scraped_at'),
+                "connector_id": self.config.id,
+                "content_type": "image_description",
+                "description": description,
+                "original_image_url": img_info.get('original_url'),
+                "stored_image_url": img_info.get('stored_url')
+            }
+            
+            # Convert embedding to list format for PostgreSQL vector column
+            embedding_list = embedding.tolist()
+            
+            # Insert new embedding
+            db.execute(
+                text("""
+                    INSERT INTO embeddings 
+                    (id, organization_id, domain_id, source_type, source_id,
+                     content_text, embedding, metadata, embedding_model)
+                    VALUES 
+                    (:id, :org_id, :domain_id, :source_type, :source_id,
+                     :content_text, :embedding, :metadata, :embedding_model)
+                """),
+                {
+                    "id": embedding_id,
+                    "org_id": self.config.organization_id,
+                    "domain_id": self._get_domain_id(),
+                    "source_type": "image_description",
+                    "source_id": image_source_id,  # Use proper UUID instead of string like "html_img_0"
+                    "content_text": description,
+                    "embedding": embedding_list,
+                    "metadata": json.dumps(metadata),
+                    "embedding_model": "default"  # Assuming a default embedding model
+                }
+            )
+            
+            db.commit()
+            logger.debug(f"🔍 Stored image description embedding for: {page_url}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to store image description embedding for {page_url}: {e}")
+
+    async def regenerate_embeddings_with_visual_content(self) -> Dict[str, Any]:
+        """Regenerate embeddings for existing crawled pages to include visual content metadata"""
+        try:
+            from dependencies import get_db
+            from sqlalchemy import text
+            import json
+            
+            db = next(get_db())
+            
+            # Find crawled pages that have visual content but embeddings without it
+            result = db.execute(
+                text("""
+                    SELECT cp.id, cp.url, cp.title, cp.content, cp.metadata, cp.last_crawled,
+                           e.id as embedding_id, e.metadata as embedding_metadata
+                    FROM crawled_pages cp
+                    JOIN embeddings e ON e.source_id = cp.id 
+                        AND e.source_type = 'web_page'
+                        AND e.organization_id = :org_id
+                    WHERE cp.organization_id = :org_id 
+                        AND cp.connector_id = :connector_id
+                        AND cp.content IS NOT NULL 
+                        AND LENGTH(cp.content) > 50
+                        AND cp.metadata IS NOT NULL
+                        AND cp.metadata::text LIKE '%visual_content%'
+                        AND (e.metadata IS NULL OR e.metadata::text NOT LIKE '%visual_content%')
+                """),
+                {
+                    "org_id": self.config.organization_id,
+                    "connector_id": self.config.id
+                }
+            ).fetchall()
+            
+            if not result:
+                logger.info("✅ No pages found that need visual content embedding updates")
+                return {"processed": 0, "updated": 0, "errors": 0, "message": "No updates needed"}
+            
+            logger.info(f"🔄 Found {len(result)} pages with visual content needing embedding updates")
+            
+            processed = 0
+            updated = 0
+            errors = 0
+            
+            for row in result:
+                try:
+                    # Parse the crawled page metadata to get visual content
+                    page_metadata = json.loads(row.metadata) if row.metadata else {}
+                    visual_content = page_metadata.get('visual_content', {})
+                    
+                    if not visual_content:
+                        processed += 1
+                        continue
+                    
+                    # Parse existing embedding metadata
+                    existing_metadata = json.loads(row.embedding_metadata) if row.embedding_metadata else {}
+                    
+                    # Add visual content to embedding metadata
+                    updated_metadata = existing_metadata.copy()
+                    updated_metadata['visual_content'] = visual_content
+                    
+                    # Update the embedding metadata in database
+                    db.execute(
+                        text("""
+                            UPDATE embeddings 
+                            SET metadata = :metadata, updated_at = NOW()
+                            WHERE id = :embedding_id
+                        """),
+                        {
+                            "embedding_id": row.embedding_id,
+                            "metadata": json.dumps(updated_metadata)
+                        }
+                    )
+                    
+                    updated += 1
+                    processed += 1
+                    
+                    logger.debug(f"📸 Updated embedding metadata for: {row.url}")
+                    
+                    if processed % 10 == 0:
+                        logger.info(f"🔄 Processed {processed}/{len(result)} pages...")
+                        db.commit()  # Commit every 10 updates
+                        
+                except Exception as e:
+                    logger.error(f"❌ Failed to update embedding for {row.url}: {e}")
+                    errors += 1
+                    processed += 1
+            
+            # Final commit
+            db.commit()
+            
+            logger.info(f"✅ Visual content embedding update complete: {updated} updated, {errors} errors")
+            
+            return {
+                "processed": processed,
+                "updated": updated,
+                "errors": errors,
+                "total_pages": len(result),
+                "message": f"Successfully updated {updated} embeddings with visual content"
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to update embeddings with visual content: {e}")
+            return {"error": str(e), "processed": 0, "updated": 0, "errors": 0} 

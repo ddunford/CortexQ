@@ -19,7 +19,7 @@ import os
 import logging
 import uvicorn
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 
@@ -31,8 +31,6 @@ import redis
 from dependencies import get_db
 from routes import (
     auth_router,
-    auth_user_router,
-    auth_role_router,
     file_router, 
     web_scraping_router,
     sources_router,
@@ -48,6 +46,7 @@ from routes import (
 from routes.auth_routes import set_session_manager
 from routes.chat_routes import set_rag_processor
 from routes.search_routes import set_rag_processor as set_search_rag_processor
+from routes.scraper_management_routes import router as scraper_management_router
 
 # Import core services
 from rag_processor import initialize_rag_processor
@@ -203,8 +202,6 @@ async def health_check():
 
 # Register all routers with appropriate prefixes
 app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
-app.include_router(auth_user_router, prefix="/auth/users", tags=["User Management"])
-app.include_router(auth_role_router, prefix="/auth/roles", tags=["Role Management"])
 app.include_router(file_router, prefix="/files", tags=["File Management"])
 app.include_router(web_scraping_router, prefix="/web-scraping", tags=["Web Scraping"])
 app.include_router(sources_router, prefix="/sources", tags=["Sources"])
@@ -215,11 +212,79 @@ app.include_router(domain_templates_router, prefix="/domain-templates", tags=["D
 app.include_router(analytics_router, prefix="/analytics", tags=["Analytics"])
 app.include_router(user_router, prefix="/users", tags=["User Profile"])
 app.include_router(connectors_router, tags=["Data Source Connectors"])
+app.include_router(scraper_management_router, tags=["Scraper Management"])
 
 # Debug router (only in development)
 if DEBUG:
     app.include_router(debug_router, prefix="/debug", tags=["Debug"])
     logger.info("🔧 Debug endpoints enabled")
+
+# Add image proxy endpoint for serving MinIO images
+@app.get("/api/images/{organization_slug}/{domain}/{year}/{month}/{image_path:path}")
+async def proxy_image(
+    organization_slug: str,
+    domain: str, 
+    year: str,
+    month: str,
+    image_path: str
+):
+    """Proxy endpoint to serve MinIO images through the public API"""
+    try:
+        from storage_utils import minio_storage
+        import asyncio
+        
+        # Construct the MinIO object key
+        object_key = f"{organization_slug}/{domain}/{year}/{month}/{image_path}"
+        logger.info(f"Attempting to serve image: {object_key}")
+        
+        # Run the synchronous download_file method in a thread pool with timeout
+        try:
+            file_data = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None, 
+                    minio_storage.download_file, 
+                    object_key
+                ),
+                timeout=10.0  # 10 second timeout
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout downloading image: {object_key}")
+            raise HTTPException(status_code=504, detail="Timeout downloading image")
+        
+        if not file_data:
+            logger.warning(f"Image not found in MinIO: {object_key}")
+            raise HTTPException(status_code=404, detail="Image not found")
+        
+        # Determine content type based on file extension
+        content_type = "image/png"
+        if image_path.lower().endswith('.jpg') or image_path.lower().endswith('.jpeg'):
+            content_type = "image/jpeg"
+        elif image_path.lower().endswith('.gif'):
+            content_type = "image/gif"
+        elif image_path.lower().endswith('.webp'):
+            content_type = "image/webp"
+        elif image_path.lower().endswith('.svg'):
+            content_type = "image/svg+xml"
+        
+        logger.info(f"Successfully serving image: {object_key} ({len(file_data)} bytes, {content_type})")
+        
+        # Return the image with proper headers
+        return Response(
+            content=file_data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=3600",  # Cache for 1 hour
+                "Access-Control-Allow-Origin": "*",
+                "Content-Length": str(len(file_data))
+            }
+        )
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions (404, 504, etc.)
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error serving image {object_key}: {e}")
+        raise HTTPException(status_code=500, detail="Error serving image")
 
 # ============================================================================
 # MAIN APPLICATION

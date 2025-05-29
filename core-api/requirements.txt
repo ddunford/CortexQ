@@ -96,4 +96,7 @@ user-agents>=2.2.0
 certifi>=2023.7.22
 
 # Schema parser dependencies
-xmltodict>=0.13.0 
+xmltodict>=0.13.0
+
+# Image processing
+Pillow==10.1.0 

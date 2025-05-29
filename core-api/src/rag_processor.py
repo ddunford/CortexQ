@@ -195,7 +195,7 @@ class MultiDomainVectorStore:
             # Query embeddings from database with organization isolation and polymorphic support
             result = db.execute(
                 text("""
-                    SELECT e.id, e.content_text, e.embedding, e.source_id, e.chunk_index,
+                    SELECT e.id, e.content_text, e.embedding, e.source_id, e.chunk_index, e.metadata,
                            COALESCE(f.original_filename, cp.title) as title,
                            COALESCE(f.content_type, 'text/html') as content_type,
                            od.domain_name, e.organization_id, e.source_type,
@@ -238,7 +238,6 @@ class MultiDomainVectorStore:
                 try:
                     # Parse stored embedding from JSON string to numpy array
                     if isinstance(row.embedding, str):
-                        import json
                         embedding_list = json.loads(row.embedding)
                     else:
                         embedding_list = row.embedding
@@ -254,16 +253,35 @@ class MultiDomainVectorStore:
                     similarity_scores.append(similarity)
                     
                     if similarity >= min_similarity:
+                        # Parse embedding metadata if it exists
+                        embedding_metadata = {}
+                        if row.metadata:
+                            try:
+                                if isinstance(row.metadata, str):
+                                    embedding_metadata = json.loads(row.metadata)
+                                else:
+                                    embedding_metadata = row.metadata
+                            except Exception as e:
+                                print(f"⚠️ DEBUG: Failed to parse embedding metadata: {e}")
+                        
+                        # Build complete metadata including visual content
+                        complete_metadata = {
+                            "title": row.title,
+                            "content_type": row.content_type,
+                            "chunk_index": row.chunk_index,
+                            "organization_id": str(row.organization_id),
+                            "source_url": row.source_url,
+                            "source_type": row.source_type
+                        }
+                        
+                        # Include visual content if available in embedding metadata
+                        if embedding_metadata.get('visual_content'):
+                            complete_metadata['visual_content'] = embedding_metadata['visual_content']
+                            print(f"✅ DEBUG: Found visual content in embedding metadata for {row.title}")
+                        
                         results.append(SearchResult(
                             content=row.content_text,
-                            metadata={
-                                "title": row.title,
-                                "content_type": row.content_type,
-                                "chunk_index": row.chunk_index,
-                                "organization_id": str(row.organization_id),
-                                "source_url": row.source_url,
-                                "source_type": row.source_type
-                            },
+                            metadata=complete_metadata,
                             similarity=float(similarity),
                             domain=row.domain_name,  # Use domain_name from join
                             source_id=str(row.source_id) if row.source_id else ""
@@ -897,7 +915,7 @@ class EnhancedRAGProcessor:
             # Get embeddings for new content chunks from database
             result = db.execute(
                 text("""
-                    SELECT e.id, e.content_text, e.embedding, e.chunk_index,
+                    SELECT e.id, e.content_text, e.embedding, e.chunk_index, e.metadata,
                            f.original_filename, f.content_type, f.domain
                     FROM embeddings e
                     JOIN files f ON e.source_id = f.id
@@ -914,7 +932,6 @@ class EnhancedRAGProcessor:
                 try:
                     # Parse stored embedding
                     if isinstance(row.embedding, str):
-                        import json
                         embedding_list = json.loads(row.embedding)
                     else:
                         embedding_list = row.embedding
@@ -926,13 +943,35 @@ class EnhancedRAGProcessor:
                     )
                     
                     if similarity >= 0.3:  # Minimum threshold for relevance
+                        # Parse embedding metadata if it exists
+                        embedding_metadata = {}
+                        if row.metadata:
+                            try:
+                                if isinstance(row.metadata, str):
+                                    embedding_metadata = json.loads(row.metadata)
+                                else:
+                                    embedding_metadata = row.metadata
+                            except Exception as e:
+                                print(f"⚠️ DEBUG: Failed to parse embedding metadata: {e}")
+                        
+                        # Build complete metadata including visual content
+                        complete_metadata = {
+                            "title": row.original_filename,
+                            "content_type": row.content_type,
+                            "chunk_index": row.chunk_index,
+                            "organization_id": str(row.organization_id),
+                            "source_url": row.source_url,
+                            "source_type": row.source_type
+                        }
+                        
+                        # Include visual content if available in embedding metadata
+                        if embedding_metadata.get('visual_content'):
+                            complete_metadata['visual_content'] = embedding_metadata['visual_content']
+                            print(f"✅ DEBUG: Found visual content in embedding metadata for {row.original_filename}")
+                        
                         search_results.append(SearchResult(
                             content=row.content_text,
-                            metadata={
-                                "title": row.original_filename,
-                                "content_type": row.content_type,
-                                "chunk_index": row.chunk_index
-                            },
+                            metadata=complete_metadata,
                             similarity=float(similarity),
                             domain=row.domain,
                             source_id=new_file_id
@@ -1243,6 +1282,22 @@ class EnhancedRAGProcessor:
                     intent=classification.intent
                 )
                 
+                # Debug: Log visual content in sources for login queries
+                if 'login' in request.query.lower():
+                    print(f"🔍 DEBUG LOGIN: Query contains 'login', checking sources for visual content...")
+                    for i, source in enumerate(sources):
+                        metadata = source.get('metadata', {})
+                        visual_content = metadata.get('visual_content', {})
+                        if visual_content:
+                            screenshots = visual_content.get('screenshots', [])
+                            images = visual_content.get('images', [])
+                            print(f"📸 DEBUG LOGIN: Source {i} ({source.get('title', 'Unknown')}) has {len(screenshots)} screenshots, {len(images)} images")
+                            for j, screenshot in enumerate(screenshots[:2]):
+                                alt_text = screenshot.get('alt_text', 'Unknown')
+                                print(f"  - Screenshot {j}: {alt_text}")
+                        else:
+                            print(f"❌ DEBUG LOGIN: Source {i} ({source.get('title', 'Unknown')}) has no visual content")
+                
                 print(f"LLM response generated: {llm_response[:100]}...")
                 
                 # Boost confidence when using LLM
@@ -1379,12 +1434,24 @@ class EnhancedRAGProcessor:
             # Get the URL (for web pages) or file ID (for files)
             source_url = best_result.metadata.get("source_url") if source_type == "web_page" else None
             
-            # Extract images/screenshots if available
+            # Extract images/screenshots if available from SearchResult metadata
             images = []
-            if best_result.metadata.get("images"):
-                images = best_result.metadata["images"][:3]  # Limit to 3 images per source
-            elif best_result.metadata.get("screenshots"):
-                images = best_result.metadata["screenshots"][:3]
+            visual_content = best_result.metadata.get("visual_content", {})
+            
+            if visual_content:
+                # Get images and screenshots from visual content
+                if visual_content.get("images"):
+                    images.extend(visual_content["images"][:3])  # Limit to 3 images per source
+                if visual_content.get("screenshots"):
+                    images.extend(visual_content["screenshots"][:3])  # Limit to 3 screenshots per source
+                
+                print(f"📸 DEBUG: Found visual content for {clean_title}: {len(visual_content.get('screenshots', []))} screenshots, {len(visual_content.get('images', []))} images")
+            else:
+                # Fallback: check if images are directly in metadata
+                if best_result.metadata.get("images"):
+                    images = best_result.metadata["images"][:3]
+                elif best_result.metadata.get("screenshots"):
+                    images = best_result.metadata["screenshots"][:3]
             
             # Extract step-by-step content if available (for procedural documents)
             steps = []
@@ -1427,7 +1494,15 @@ class EnhancedRAGProcessor:
                 "images": images,  # Screenshots or images from help guides
                 "steps": steps,  # Extracted step-by-step instructions
                 "has_visual_content": len(images) > 0,
-                "has_procedural_content": len(steps) > 0
+                "has_procedural_content": len(steps) > 0,
+                # CRITICAL: Include the metadata with visual content for LLM access
+                "metadata": {
+                    "title": clean_title,
+                    "content_type": best_result.metadata.get("content_type", ""),
+                    "visual_content": visual_content,  # Include visual content for LLM
+                    "source_url": source_url,
+                    "source_type": source_type
+                }
             })
             citation_counter += 1
         

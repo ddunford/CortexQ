@@ -26,24 +26,42 @@ import {
   Code,
   X,
   Book,
-  ExternalLink
+  ExternalLink,
+  Database,
+  FileIcon,
+  Clock,
+  User,
+  AlertCircle
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import CitationText from '../ui/CitationText';
-import { Organization, Domain, Document, ConnectorConfig, SearchQuery, AnalyticsMetrics, ChatSession, ApiResponse } from '../../types';
+import { Organization, Domain, Document, ConnectorConfig, AnalyticsMetrics, ApiResponse } from '../../types';
 import { api } from '../../utils/api';
 import { ConnectorConfigModal } from '../connectors/ConnectorConfigModal';
 import WebScraperManager from '../connectors/WebScraperManager';
+import ScraperManagement from '../knowledge/ScraperManagement';
 
 interface DomainWorkspaceProps {
   domain: Domain;
+  activeSection?: SectionType;
+  onSectionChange?: (section: SectionType) => void;
   onEditDomain: () => void;
   onDeleteDomain: () => void;
 }
 
-type TabType = 'knowledge' | 'chat' | 'search' | 'sources' | 'analytics' | 'settings';
+type SectionType = 'chat' | 'sources' | 'analytics' | 'audit' | 'settings';
+
+interface SearchResult {
+  id: string;
+  title: string;
+  snippet: string;
+  confidence: number;
+  score: number;
+  type: string;
+  metadata?: any;
+}
 
 interface ChatMessage {
   id: string;
@@ -54,22 +72,42 @@ interface ChatMessage {
   confidence?: number;
 }
 
+interface AuditEvent {
+  id: string;
+  event_type: string;
+  resource_type: string;
+  action: string;
+  description: string;
+  created_at: string;
+  username: string;
+}
+
+interface AuditAnalytics {
+  total_events: number;
+  unique_users: number;
+  event_types: Array<{
+    event_type: string;
+    count: number;
+    unique_users: number;
+    percentage: number;
+  }>;
+  recent_events: AuditEvent[];
+  time_range_days: number;
+}
+
 const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   domain,
+  activeSection = 'chat',
+  onSectionChange,
   onEditDomain,
   onDeleteDomain,
 }) => {
-  const [activeTab, setActiveTab] = useState<TabType>('knowledge');
   const [documents, setDocuments] = useState<Document[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [searchFilters, setSearchFilters] = useState({
-    documents: true,
-    conversations: true,
-    externalData: true
-  });
   const [connectors, setConnectors] = useState<ConnectorConfig[]>([]);
   const [analytics, setAnalytics] = useState<AnalyticsMetrics | null>(null);
+  const [auditData, setAuditData] = useState<AuditAnalytics | null>(null);
   const [loading, setLoading] = useState(false);
   
   // Connector modal state
@@ -109,21 +147,42 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     };
   }, [selectedConnector?.id, selectedConnector?.type, selectedConnector?.name]);
 
-  const tabs = [
-    { id: 'knowledge', label: 'Knowledge Base', icon: FileText, description: 'Manage documents and files' },
-    { id: 'chat', label: 'AI Assistant', icon: MessageCircle, description: 'Chat with domain AI' },
-    { id: 'search', label: 'Search & Discovery', icon: Search, description: 'Advanced search capabilities' },
-    { id: 'sources', label: 'Data Sources', icon: Link, description: 'External integrations' },
-    { id: 'analytics', label: 'Analytics', icon: BarChart3, description: 'Usage insights' },
-    { id: 'settings', label: 'Settings', icon: Settings, description: 'Domain configuration' },
+  const sidebarSections = [
+    { 
+      id: 'chat', 
+      label: 'AI Assistant', 
+      icon: MessageCircle, 
+      description: 'Chat with domain AI' 
+    },
+    { 
+      id: 'sources', 
+      label: 'Data Sources', 
+      icon: Database, 
+      description: 'Files and external integrations' 
+    },
+    { 
+      id: 'analytics', 
+      label: 'Analytics', 
+      icon: BarChart3, 
+      description: 'Usage insights and metrics' 
+    },
+    { 
+      id: 'audit', 
+      label: 'Audit', 
+      icon: Shield, 
+      description: 'Activity logs and compliance' 
+    },
+    { 
+      id: 'settings', 
+      label: 'Settings', 
+      icon: Settings, 
+      description: 'Domain configuration' 
+    },
   ];
 
   useEffect(() => {
     loadWorkspaceData();
-    if (activeTab === 'knowledge') {
-      loadProcessingStatus();
-    }
-  }, [domain.id, activeTab]);
+  }, [domain.id, activeSection]);
 
   // Auto-scroll chat to bottom when new messages are added
   useEffect(() => {
@@ -135,11 +194,15 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
   const loadWorkspaceData = async () => {
     setLoading(true);
     try {
-      switch (activeTab) {
-        case 'knowledge':
-          const docsResponse = await api.getFiles(domain.id);
+      switch (activeSection) {
+        case 'sources':
+          // Load both files and connectors for data sources section
+          const [docsResponse, connectorsResponse] = await Promise.all([
+            api.getFiles(domain.id),
+            api.getConnectors(domain.id)
+          ]);
+          
           if (docsResponse.success) {
-            // Map API response to frontend format - API returns {files: [...], total: number}
             const files = docsResponse.data?.files || [];
             const mappedFiles = files.map((file: any) => ({
               ...file,
@@ -152,57 +215,46 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
             }));
             setDocuments(mappedFiles);
           }
-          break;
-        case 'sources':
-          console.log('Loading connectors for domain:', domain.id);
-          const connectorsResponse = await api.getConnectors(domain.id);
-          console.log('Connectors API response:', connectorsResponse);
           
-          if (connectorsResponse.success && connectorsResponse.data && Array.isArray(connectorsResponse.data.connectors)) {
-            // Transform backend response to match frontend interface
-            const mappedConnectors = connectorsResponse.data.connectors.map((connector: any) => {
-              console.log('Raw connector from API:', connector);
-              console.log('connector.connector_type:', connector.connector_type);
-              console.log('typeof connector.connector_type:', typeof connector.connector_type);
+          if (connectorsResponse.success && connectorsResponse.data) {
+            // Handle both array response and object with connectors property
+            const connectorList = Array.isArray(connectorsResponse.data) 
+              ? connectorsResponse.data 
+              : connectorsResponse.data.connectors || [];
               
-              // Handle both string and enum cases for connector_type
-              let connectorType = 'unknown';
-              if (connector.connector_type) {
-                if (typeof connector.connector_type === 'string') {
-                  connectorType = connector.connector_type;
-                } else if (connector.connector_type.value) {
-                  connectorType = connector.connector_type.value;
-                } else if (connector.connector_type.toString) {
-                  connectorType = connector.connector_type.toString();
-                }
-              }
-              
-              const mappedConnector = {
+            const mappedConnectors = connectorList.map((connector: any) => {
+              return {
                 id: connector.id,
-                type: connectorType,
+                type: connector.type || connector.connector_type || 'unknown',
                 name: connector.name,
-                isEnabled: connector.is_enabled,
-                status: connector.status,
-                lastSync: connector.last_sync_at,
-                authConfig: connector.auth_config || {},
-                syncConfig: connector.sync_config || {},
-                mappingConfig: connector.mapping_config || {}
+                isEnabled: connector.isEnabled ?? connector.is_enabled ?? true,
+                status: connector.status || 'pending',
+                lastSync: connector.lastSync || connector.last_sync_at || null,
+                authConfig: connector.authConfig || connector.auth_config || {},
+                syncConfig: connector.syncConfig || connector.sync_config || {},
+                mappingConfig: connector.mappingConfig || connector.mapping_config || {}
               };
-              
-              console.log('Mapped connector:', mappedConnector);
-              return mappedConnector;
             });
-            console.log('Mapped connectors:', mappedConnectors);
             setConnectors(mappedConnectors);
           } else {
-            console.warn('Failed to load connectors or invalid data format:', connectorsResponse);
-            setConnectors([]); // Set to empty array on failure
+            setConnectors([]);
           }
+          
+          // Load processing status for files
+          loadProcessingStatus();
           break;
+          
         case 'analytics':
           const analyticsResponse = await api.getAnalytics(domain.id);
           if (analyticsResponse.success) {
             setAnalytics(analyticsResponse.data);
+          }
+          break;
+          
+        case 'audit':
+          const auditResponse = await api.getAuditAnalytics();
+          if (auditResponse.success) {
+            setAuditData(auditResponse.data);
           }
           break;
       }
@@ -562,194 +614,361 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     }
   };
 
-  const renderKnowledgeBase = () => (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-lg font-semibold text-gray-900">Knowledge Base</h3>
-          <p className="text-gray-600">Manage documents and files for this domain</p>
-        </div>
-        <div className="flex space-x-3">
-          <Button variant="outline" icon={<Filter className="h-4 w-4" />}>
-            Filter
-          </Button>
-          <Button 
-            variant="outline"
-            icon={<Brain className="h-4 w-4" />}
-            onClick={() => handleReindex(false)}
-            loading={reindexing}
-          >
-            Reindex Failed
-          </Button>
-          <Button 
-            variant="outline"
-            icon={<Activity className="h-4 w-4" />}
-            onClick={() => handleReindex(true)}
-            loading={reindexing}
-          >
-            Force Reindex All
-          </Button>
-          <Button 
-            icon={<Upload className="h-4 w-4" />}
-            onClick={handleUploadClick}
-            loading={uploading}
-          >
-            Upload Files
-          </Button>
-        </div>
-      </div>
+  const renderDataSources = () => {
+    if (selectedConnector) {
+      if (selectedConnector.type === 'web_scraper') {
+        return (
+          <div>
+            <div className="flex items-center space-x-4 mb-6">
+              <Button
+                variant="outline"
+                icon={<ArrowLeft className="h-4 w-4" />}
+                onClick={handleBackToConnectors}
+              >
+                Back to Data Sources
+              </Button>
+              <h2 className="text-xl font-semibold text-gray-900">{selectedConnector.name}</h2>
+            </div>
+            <WebScraperManager 
+              connector={stableSelectedConnector}
+              domainId={domain.id}
+              onConnectorUpdated={handleConnectorUpdated}
+            />
+          </div>
+        );
+      } else {
+        return (
+          <div>
+            <div className="flex items-center space-x-4 mb-6">
+              <Button
+                variant="outline"
+                icon={<ArrowLeft className="h-4 w-4" />}
+                onClick={handleBackToConnectors}
+              >
+                Back to Data Sources
+              </Button>
+              <h2 className="text-xl font-semibold text-gray-900">{selectedConnector.name}</h2>
+            </div>
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+              <p className="text-yellow-800">
+                Management interface for {selectedConnector.type} connectors coming soon.
+              </p>
+            </div>
+          </div>
+        );
+      }
+    }
 
-      {/* Processing Status */}
-      {processingStatus && (
+    return (
+      <div className="space-y-6">
+        {/* Files Section */}
         <Card>
-          <CardHeader>
-            <CardTitle>Processing Status</CardTitle>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center space-x-2">
+                <FileText className="h-5 w-5" />
+                <span>File Library</span>
+              </CardTitle>
+              <p className="text-sm text-gray-600 mt-1">Upload and manage documents for this domain</p>
+            </div>
+            <div className="flex items-center space-x-2">
+              <Button 
+                variant="outline" 
+                icon={<Upload className="h-4 w-4" />}
+                onClick={handleUploadClick}
+                disabled={uploading}
+              >
+                {uploading ? 'Uploading...' : 'Upload Files'}
+              </Button>
+              {documents.length > 0 && (
+                <Button 
+                  variant="outline" 
+                  icon={<Brain className="h-4 w-4" />}
+                  onClick={() => handleReindex()}
+                  disabled={reindexing}
+                >
+                  {reindexing ? 'Reindexing...' : 'Reindex All'}
+                </Button>
+              )}
+            </div>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <h4 className="font-medium text-gray-900">Files</h4>
-                <div className="space-y-1 text-sm">
-                  <div className="flex justify-between">
-                    <span>Total:</span>
-                    <span className="font-medium">{processingStatus.files?.total || 0}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Processed:</span>
-                    <span className="font-medium text-green-600">{processingStatus.files?.processed || 0}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Pending:</span>
-                    <span className="font-medium text-yellow-600">{processingStatus.files?.pending || 0}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Failed:</span>
-                    <span className="font-medium text-red-600">{processingStatus.files?.failed || 0}</span>
-                  </div>
+            {loading ? (
+              <div className="flex items-center justify-center py-8">
+                <div className="text-center">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+                  <p className="text-gray-500 mt-2">Loading files...</p>
                 </div>
               </div>
-              <div className="space-y-2">
-                <h4 className="font-medium text-gray-900">Embeddings</h4>
-                <div className="space-y-1 text-sm">
-                  <div className="flex justify-between">
-                    <span>Total Embeddings:</span>
-                    <span className="font-medium">{processingStatus.embeddings?.total_embeddings || 0}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Files with Embeddings:</span>
-                    <span className="font-medium">{processingStatus.embeddings?.files_with_embeddings || 0}</span>
-                  </div>
-                </div>
+            ) : documents.length === 0 ? (
+              <div className="text-center py-8">
+                <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">No files uploaded</h3>
+                <p className="text-gray-500 mb-4">Upload documents to start building your knowledge base</p>
+                <Button icon={<Upload className="h-4 w-4" />} onClick={handleUploadClick}>
+                  Upload Your First File
+                </Button>
               </div>
-              <div className="space-y-2">
-                <h4 className="font-medium text-gray-900">Active Jobs</h4>
-                <div className="space-y-1 text-sm">
-                  <div className="flex justify-between">
-                    <span>Pending Jobs:</span>
-                    <span className="font-medium text-blue-600">{processingStatus.processing_jobs?.pending || 0}</span>
+            ) : (
+              <div className="space-y-3">
+                {documents.map((doc) => (
+                  <div key={doc.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                    <div className="flex items-center space-x-3">
+                      <FileText className="h-5 w-5 text-gray-400" />
+                      <div>
+                        <p className="font-medium text-gray-900">{doc.filename}</p>
+                        <p className="text-sm text-gray-500">
+                          {((doc.size || 0) / 1024).toFixed(1)} KB • {new Date(doc.createdAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(doc.status)}`}>
+                        {doc.status}
+                      </span>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        icon={<Eye className="h-4 w-4" />}
+                        onClick={() => handleViewFile(doc)}
+                      >
+                        View
+                      </Button>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        icon={<Download className="h-4 w-4" />}
+                        onClick={() => handleDownloadFile(doc)}
+                      >
+                        Download
+                      </Button>
+                      <Button 
+                        variant="danger" 
+                        size="sm" 
+                        icon={<Trash2 className="h-4 w-4" />}
+                        onClick={() => handleDeleteFile(doc)}
+                      >
+                        Delete
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex justify-between">
-                    <span>Running Jobs:</span>
-                    <span className="font-medium text-orange-600">{processingStatus.processing_jobs?.running || 0}</span>
+                ))}
+                
+                {processingStatus && processingStatus.queue_length > 0 && (
+                  <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                    <div className="flex items-center space-x-2">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                      <span className="text-blue-800 font-medium">Processing files...</span>
+                    </div>
+                    <p className="text-blue-700 text-sm mt-1">
+                      {processingStatus.queue_length} files in processing queue
+                    </p>
                   </div>
-                </div>
-              </div>
-            </div>
-            {(processingStatus.processing_jobs?.active || 0) > 0 && (
-              <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                <div className="flex items-center space-x-2">
-                  <Activity className="h-4 w-4 text-blue-600 animate-spin" />
-                  <span className="text-sm text-blue-800">
-                    Processing {processingStatus.processing_jobs.active} files in the background...
-                  </span>
-                </div>
+                )}
               </div>
             )}
           </CardContent>
         </Card>
-      )}
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card padding="sm">
-          <div className="text-center">
-            <p className="text-2xl font-bold text-gray-900">{documents.length}</p>
-            <p className="text-sm text-gray-600">Total Documents</p>
-          </div>
-        </Card>
-        <Card padding="sm">
-          <div className="text-center">
-            <p className="text-2xl font-bold text-gray-900">
-              {documents.filter(d => d.status === 'indexed').length}
-            </p>
-            <p className="text-sm text-gray-600">Indexed</p>
-          </div>
-        </Card>
-        <Card padding="sm">
-          <div className="text-center">
-            <p className="text-2xl font-bold text-gray-900">
-              {documents.filter(d => d.status === 'processing').length}
-            </p>
-            <p className="text-sm text-gray-600">Processing</p>
-          </div>
-        </Card>
-        <Card padding="sm">
-          <div className="text-center">
-            <p className="text-2xl font-bold text-gray-900">
-              {Math.round(documents.reduce((acc, d) => acc + (d.size || 0), 0) / 1024 / 1024)}MB
-            </p>
-            <p className="text-sm text-gray-600">Total Size</p>
-          </div>
+        {/* External Connectors Section */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center space-x-2">
+                <Link className="h-5 w-5" />
+                <span>External Data Sources</span>
+              </CardTitle>
+              <p className="text-sm text-gray-600 mt-1">Connect external platforms and services</p>
+            </div>
+            <Button
+              icon={<Link className="h-4 w-4" />}
+              onClick={() => setShowConnectorModal(true)}
+            >
+              Add Connector
+            </Button>
+          </CardHeader>
+          <CardContent>
+            {connectors.length === 0 ? (
+              <div className="text-center py-8">
+                <Link className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">No external sources connected</h3>
+                <p className="text-gray-500 mb-4">Connect external data sources like Jira, GitHub, or web scrapers</p>
+                <Button icon={<Link className="h-4 w-4" />} onClick={() => setShowConnectorModal(true)}>
+                  Add Your First Connector
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {connectors.map((connector) => (
+                  <div key={connector.id} className="flex items-center justify-between p-4 border border-gray-200 rounded-lg">
+                    <div className="flex items-center space-x-3">
+                      <div className={`p-2 rounded-lg ${connector.isEnabled ? 'bg-green-100' : 'bg-gray-100'}`}>
+                        <Link className={`h-5 w-5 ${connector.isEnabled ? 'text-green-600' : 'text-gray-400'}`} />
+                      </div>
+                      <div>
+                        <h4 className="font-medium text-gray-900">{connector.name}</h4>
+                        <p className="text-sm text-gray-500 capitalize">{connector.type.replace('_', ' ')}</p>
+                        {connector.lastSync && (
+                          <p className="text-xs text-gray-400">Last sync: {new Date(connector.lastSync).toLocaleString()}</p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(connector.status)}`}>
+                        {connector.status}
+                      </span>
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        onClick={() => handleConnectorSelect(connector)}
+                      >
+                        {connector.type === 'web_scraper' ? 'Manage' : 'Configure'}
+                      </Button>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        icon={<Edit className="h-4 w-4" />}
+                        onClick={() => {
+                          setSelectedConnector(connector);
+                          setShowConnectorModal(true);
+                        }}
+                      >
+                        Edit
+                      </Button>
+                      <Button 
+                        variant="danger" 
+                        size="sm" 
+                        icon={<Trash2 className="h-4 w-4" />}
+                        onClick={() => handleConnectorDelete(connector.id, connector.name)}
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
         </Card>
       </div>
+    );
+  };
 
-      {/* Documents List */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Documents</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {documents.length === 0 ? (
-            <div className="text-center py-8">
-              <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">No documents yet</h3>
-              <p className="text-gray-500 mb-4">Upload your first document to get started.</p>
-              <Button 
-                icon={<Upload className="h-4 w-4" />}
-                onClick={handleUploadClick}
-                loading={uploading}
-              >
-                Upload Document
-              </Button>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {documents.map((doc) => (
-                <div key={doc.id} className="flex items-center justify-between p-4 border border-gray-200 rounded-lg">
-                  <div className="flex items-center space-x-3">
-                    <FileText className="h-8 w-8 text-gray-400" />
-                    <div>
-                      <h4 className="font-medium text-gray-900">{doc.filename}</h4>
+  const renderAudit = () => (
+    <div className="space-y-6">
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+            <p className="text-gray-500 mt-2">Loading audit data...</p>
+          </div>
+        </div>
+      ) : !auditData ? (
+        <div className="text-center py-12">
+          <AlertCircle className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">No audit data available</h3>
+          <p className="text-gray-500">Audit logging may not be enabled for this domain</p>
+        </div>
+      ) : (
+        <>
+          {/* Audit Overview */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <Card>
+              <CardContent className="p-6">
+                <div className="flex items-center">
+                  <Activity className="h-8 w-8 text-blue-600" />
+                  <div className="ml-4">
+                    <p className="text-sm font-medium text-gray-600">Total Events</p>
+                    <p className="text-2xl font-bold text-gray-900">{auditData.total_events.toLocaleString()}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-6">
+                <div className="flex items-center">
+                  <Users className="h-8 w-8 text-green-600" />
+                  <div className="ml-4">
+                    <p className="text-sm font-medium text-gray-600">Active Users</p>
+                    <p className="text-2xl font-bold text-gray-900">{auditData.unique_users}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-6">
+                <div className="flex items-center">
+                  <Clock className="h-8 w-8 text-purple-600" />
+                  <div className="ml-4">
+                    <p className="text-sm font-medium text-gray-600">Time Range</p>
+                    <p className="text-2xl font-bold text-gray-900">{auditData.time_range_days} days</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Event Types Distribution */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Event Types Distribution</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {auditData.event_types.map((eventType, index) => (
+                  <div key={index} className="flex items-center justify-between">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-3 h-3 rounded-full bg-blue-500"></div>
+                      <span className="font-medium text-gray-900">{eventType.event_type}</span>
+                    </div>
+                    <div className="flex items-center space-x-4">
+                      <span className="text-sm text-gray-500">{eventType.unique_users} users</span>
+                      <span className="font-semibold text-gray-900">{eventType.count}</span>
+                      <span className="text-sm text-gray-500">({eventType.percentage}%)</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Recent Activity */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Recent Activity</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {auditData.recent_events.map((event, index) => (
+                  <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                    <div className="flex items-center space-x-3">
+                      <div className="flex-shrink-0">
+                        <User className="h-5 w-5 text-gray-400" />
+                      </div>
+                      <div>
+                        <p className="font-medium text-gray-900">{event.description}</p>
+                        <p className="text-sm text-gray-500">
+                          {event.username} • {event.event_type} • {event.resource_type}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right">
                       <p className="text-sm text-gray-500">
-                        {((doc.size || 0) / 1024).toFixed(1)}KB • {new Date(doc.createdAt).toLocaleDateString()}
+                        {new Date(event.created_at).toLocaleDateString()}
+                      </p>
+                      <p className="text-xs text-gray-400">
+                        {new Date(event.created_at).toLocaleTimeString()}
                       </p>
                     </div>
                   </div>
-                  <div className="flex items-center space-x-2">
-                    <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(doc.status)}`}>
-                      {doc.status}
-                    </span>
-                    <Button variant="ghost" size="sm" icon={<Eye className="h-4 w-4" />} onClick={() => handleViewFile(doc)}>View</Button>
-                    <Button variant="ghost" size="sm" icon={<Download className="h-4 w-4" />} onClick={() => handleDownloadFile(doc)}>Download</Button>
-                    <Button variant="ghost" size="sm" icon={<Trash2 className="h-4 w-4" />} onClick={() => handleDeleteFile(doc)}>Delete</Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
     </div>
   );
 
@@ -915,335 +1134,8 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     </div>
   );
 
-  const renderSearch = () => (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-lg font-semibold text-gray-900">Search & Discovery</h3>
-          <p className="text-gray-600">Advanced search across all domain content</p>
-        </div>
-      </div>
-
-      {/* Search Interface */}
-      <Card>
-        <CardContent>
-          <div className="flex space-x-2 mb-4">
-            <Input
-              placeholder="Search documents, conversations, and data..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-              fullWidth
-            />
-            <Button onClick={handleSearch} loading={loading} icon={<Search className="h-4 w-4" />}>
-              Search
-            </Button>
-          </div>
-          
-          <div className="flex items-center justify-between">
-            <div className="flex space-x-4 text-sm">
-              <label className="flex items-center space-x-2 cursor-pointer">
-                <input 
-                  type="checkbox" 
-                  className="rounded" 
-                  checked={searchFilters.documents}
-                  onChange={() => handleFilterChange('documents')}
-                />
-                <span>Documents</span>
-              </label>
-              <label className="flex items-center space-x-2 cursor-pointer">
-                <input 
-                  type="checkbox" 
-                  className="rounded" 
-                  checked={searchFilters.conversations}
-                  onChange={() => handleFilterChange('conversations')}
-                />
-                <span>Conversations</span>
-              </label>
-              <label className="flex items-center space-x-2 cursor-pointer">
-                <input 
-                  type="checkbox" 
-                  className="rounded" 
-                  checked={searchFilters.externalData}
-                  onChange={() => handleFilterChange('externalData')}
-                />
-                <span>External Data</span>
-              </label>
-            </div>
-            <div className="flex space-x-2">
-              <Button 
-                variant="ghost" 
-                size="sm"
-                onClick={() => setSearchFilters({ documents: true, conversations: true, externalData: true })}
-              >
-                Select All
-              </Button>
-              <Button 
-                variant="ghost" 
-                size="sm"
-                onClick={() => setSearchFilters({ documents: false, conversations: false, externalData: false })}
-              >
-                Clear All
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Search Results */}
-      {searchResults.length > 0 && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle>Search Results ({searchResults.length})</CardTitle>
-              <div className="flex items-center space-x-2 text-xs text-gray-500">
-                <span>Filters:</span>
-                {searchFilters.documents && <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded">Documents</span>}
-                {searchFilters.conversations && <span className="bg-green-100 text-green-800 px-2 py-1 rounded">Conversations</span>}
-                {searchFilters.externalData && <span className="bg-purple-100 text-purple-800 px-2 py-1 rounded">External Data</span>}
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {searchResults.map((result, index) => (
-                <div key={`${result.id}-${index}`} className="border-b border-gray-200 pb-4 last:border-b-0">
-                  <div className="flex items-start justify-between mb-2">
-                    <h4 className="font-medium text-gray-900 flex-1">{result.title}</h4>
-                    <div className="flex items-center space-x-2 text-xs text-gray-500 ml-4">
-                      <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded">
-                        {result.metadata?.contentType || result.type}
-                      </span>
-                      <span className="bg-green-100 text-green-800 px-2 py-1 rounded">
-                        {(result.confidence * 100).toFixed(1)}%
-                      </span>
-                    </div>
-                  </div>
-                  <p className="text-sm text-gray-600 mb-2 leading-relaxed">{result.snippet}</p>
-                  <div className="flex items-center justify-between text-xs text-gray-500">
-                    <div className="flex items-center space-x-4">
-                      <span>Source: {result.metadata?.domain || 'Unknown'}</span>
-                      <span>Type: {result.type}</span>
-                      {result.metadata?.chunk_index !== undefined && (
-                        <span>Chunk: {result.metadata.chunk_index + 1}</span>
-                      )}
-                    </div>
-                    <span>Score: {result.score.toFixed(3)}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* No Results Message */}
-      {searchQuery && searchResults.length === 0 && !loading && (
-        <Card>
-          <CardContent>
-            <div className="text-center py-8">
-              <Search className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">No results found</h3>
-              <p className="text-gray-600">
-                Try adjusting your search terms or check if documents are properly indexed in this domain.
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-    </div>
-  );
-
-  const renderDataSources = () => {
-    // If a connector is selected, show its detailed view
-    if (stableSelectedConnector) {
-      console.log('=== CONNECTOR DEBUG START ===');
-      console.log('Selected connector:', stableSelectedConnector);
-      console.log('Connector type:', stableSelectedConnector.type);
-      console.log('Type check web_scraper:', stableSelectedConnector.type === 'web_scraper');
-      console.log('Type check WEB_SCRAPER:', stableSelectedConnector.type === 'WEB_SCRAPER');
-      console.log('Type includes scraper:', (stableSelectedConnector.type || '').toLowerCase().includes('scraper'));
-      console.log('=== CONNECTOR DEBUG END ===');
-      
-      // Bulletproof check for web scraper - with additional safety checks
-      const connectorType = stableSelectedConnector.type || '';
-      const isWebScraper = connectorType === 'web_scraper' || 
-                          connectorType === 'WEB_SCRAPER' ||
-                          connectorType.toLowerCase().includes('scraper') ||
-                          connectorType.toLowerCase().includes('web');
-      
-      console.log('Final isWebScraper result:', isWebScraper);
-      console.log('Connector type for safety:', connectorType);
-      
-      // Early return to prevent re-render issues
-      const connectorView = (
-        <div className="space-y-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <Button 
-                variant="ghost" 
-                onClick={handleBackToConnectors}
-                className="flex items-center space-x-2"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                <span>Back to Connectors</span>
-              </Button>
-              <div>
-                <h3 className="text-lg font-semibold text-gray-900">{stableSelectedConnector.name}</h3>
-                <p className="text-gray-600 capitalize">{connectorType} Configuration</p>
-              </div>
-            </div>
-            <Button 
-              variant="danger" 
-              size="sm"
-              onClick={() => handleConnectorDelete(stableSelectedConnector.id, stableSelectedConnector.name)}
-              icon={<Trash2 className="h-4 w-4" />}
-            >
-              Delete Connector
-            </Button>
-          </div>
-
-          {/* Force WebScraperManager for web_scraper type */}
-          {(connectorType === 'web_scraper' || isWebScraper) ? (
-            <div>
-              <div className="p-2 mb-4 bg-green-50 border border-green-200 rounded text-sm text-green-800">
-                ✅ Web Scraper Manager loaded successfully! Type: "{connectorType}"
-              </div>
-              <WebScraperManager
-                connector={stableSelectedConnector}
-                domainId={domain.id}
-                onConnectorUpdated={handleConnectorUpdated}
-              />
-            </div>
-          ) : (
-            <Card>
-              <CardContent className="text-center py-8">
-                <Settings className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                <h3 className="text-lg font-medium text-gray-900 mb-2">Configuration Not Available</h3>
-                <p className="text-gray-500">Advanced configuration for {connectorType} connectors is coming soon.</p>
-                <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded text-xs">
-                  <strong>Debug Info:</strong>
-                  <br />Type: "{connectorType}"
-                  <br />isWebScraper: {isWebScraper.toString()}
-                  <br />Check console for more details
-                </div>
-              </CardContent>
-            </Card>
-          )}
-        </div>
-      );
-      
-      return connectorView;
-    }
-
-    // Default connector list view
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900">Data Sources</h3>
-            <p className="text-gray-600">External integrations and connectors</p>
-          </div>
-          <Button 
-            icon={<Link className="h-4 w-4" />}
-            onClick={() => setShowConnectorModal(true)}
-          >
-            Add Integration
-          </Button>
-        </div>
-
-        {loading && (
-          <Card>
-            <CardContent className="text-center py-8">
-              <div className="animate-spin h-8 w-8 border-2 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
-              <p className="text-gray-600">Loading integrations...</p>
-            </CardContent>
-          </Card>
-        )}
-
-        {!loading && (!connectors || connectors.length === 0) ? (
-          <Card>
-            <CardContent className="text-center py-8">
-              <Link className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">No integrations yet</h3>
-              <p className="text-gray-500 mb-4">Connect external data sources to enrich your domain.</p>
-              <Button 
-                icon={<Link className="h-4 w-4" />}
-                onClick={() => setShowConnectorModal(true)}
-              >
-                Add Your First Integration
-              </Button>
-            </CardContent>
-          </Card>
-        ) : !loading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {(connectors || []).map((connector) => (
-              <Card key={connector.id} hover>
-                <CardContent>
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center space-x-3">
-                      <div className="p-2 bg-gray-100 rounded-lg">
-                        {connector.type === 'web_scraper' ? (
-                          <Globe className="h-5 w-5" />
-                        ) : connector.type === 'jira' ? (
-                          <Bug className="h-5 w-5" />
-                        ) : connector.type === 'github' ? (
-                          <Code className="h-5 w-5" />
-                        ) : (
-                          <Link className="h-5 w-5" />
-                        )}
-                      </div>
-                      <div>
-                        <h4 className="font-medium text-gray-900">{connector.name}</h4>
-                        <p className="text-sm text-gray-600 capitalize">{connector.type ? connector.type.replace('_', ' ') : 'Unknown'}</p>
-                      </div>
-                    </div>
-                    <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(connector.status)}`}>
-                      {connector.status}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm text-gray-500">
-                    <span>Last sync: {connector.lastSync ? new Date(connector.lastSync).toLocaleDateString() : 'Never'}</span>
-                    <div className="flex items-center space-x-2">
-                      <Button 
-                        variant="ghost" 
-                        size="sm"
-                        onClick={() => handleConnectorSelect(connector)}
-                      >
-                        Configure
-                      </Button>
-                      <Button 
-                        variant="ghost" 
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleConnectorDelete(connector.id, connector.name);
-                        }}
-                        className="text-red-600 hover:text-red-800 hover:bg-red-50"
-                        icon={<Trash2 className="h-4 w-4" />}
-                      >
-                        Delete
-                      </Button>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        ) : null}
-      </div>
-    );
-  };
-
   const renderAnalytics = () => (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-lg font-semibold text-gray-900">Analytics</h3>
-          <p className="text-gray-600">Usage insights and performance metrics</p>
-        </div>
-      </div>
-
       {analytics && (
         <>
           {/* Key Metrics */}
@@ -1303,21 +1195,6 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
 
   const renderSettings = () => (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-lg font-semibold text-gray-900">Domain Settings</h3>
-          <p className="text-gray-600">Configure domain behavior and access</p>
-        </div>
-        <div className="flex space-x-3">
-          <Button variant="outline" onClick={onEditDomain} icon={<Edit className="h-4 w-4" />}>
-            Edit Domain
-          </Button>
-          <Button variant="danger" onClick={onDeleteDomain} icon={<Trash2 className="h-4 w-4" />}>
-            Delete Domain
-          </Button>
-        </div>
-      </div>
-
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Basic Info */}
         <Card>
@@ -1370,20 +1247,19 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
     </div>
   );
 
-  const renderTabContent = () => {
-    switch (activeTab) {
-      case 'knowledge': return renderKnowledgeBase();
+  const renderSectionContent = () => {
+    switch (activeSection) {
       case 'chat': return renderChat();
-      case 'search': return renderSearch();
       case 'sources': return renderDataSources();
       case 'analytics': return renderAnalytics();
+      case 'audit': return renderAudit();
       case 'settings': return renderSettings();
       default: return null;
     }
   };
 
   return (
-    <div className="space-y-6">
+    <div className="flex h-screen bg-gray-50">
       {/* Hidden file input */}
       <input
         ref={fileInputRef}
@@ -1394,53 +1270,45 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
         className="hidden"
       />
 
-      {/* Domain Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-4">
-          <div className={`p-3 rounded-xl ${domain.color || 'bg-blue-100'}`}>
-            {getDomainIcon()}
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">{domain.display_name || domain.name}</h1>
-            <p className="text-gray-600">{domain.description}</p>
+      {/* Main Content Area - Full Width */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Content Header */}
+        <div className="bg-white border-b border-gray-200 px-8 py-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900">
+                {sidebarSections.find(s => s.id === activeSection)?.label}
+              </h2>
+              <p className="text-gray-600 mt-1">
+                {sidebarSections.find(s => s.id === activeSection)?.description}
+              </p>
+            </div>
+            <div className="flex items-center space-x-3">
+              <Button 
+                variant="outline" 
+                icon={<Edit className="h-4 w-4" />} 
+                onClick={onEditDomain}
+              >
+                Edit Domain
+              </Button>
+              <Button 
+                variant="danger" 
+                icon={<Trash2 className="h-4 w-4" />} 
+                onClick={onDeleteDomain}
+              >
+                Delete Domain
+              </Button>
+            </div>
           </div>
         </div>
-        <div className="flex items-center space-x-3">
-          <span className={`px-3 py-1 text-sm font-medium rounded-full ${getStatusColor(domain.status)}`}>
-            {domain.status}
-          </span>
-          <Button variant="outline" icon={<Users className="h-4 w-4" />}>
-            Manage Access
-          </Button>
+
+        {/* Content Body */}
+        <div className="flex-1 overflow-auto p-8">
+          {renderSectionContent()}
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="border-b border-gray-200">
-        <nav className="-mb-px flex space-x-8">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as TabType)}
-              className={`flex items-center space-x-2 py-2 px-1 border-b-2 font-medium text-sm ${
-                activeTab === tab.id
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <tab.icon className="h-4 w-4" />
-              <span>{tab.label}</span>
-            </button>
-          ))}
-        </nav>
-      </div>
-
-      {/* Tab Content */}
-      <div className="min-h-96">
-        {renderTabContent()}
-      </div>
-
-      {/* Connector Configuration Modal */}
+      {/* Modals remain the same */}
       {showConnectorModal && (
         <ConnectorConfigModal
           isOpen={showConnectorModal}
@@ -1448,14 +1316,12 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
             setShowConnectorModal(false);
             setSelectedConnector(null);
           }}
-          connector={selectedConnector}
           domainId={domain.id}
           onConnectorCreated={handleConnectorCreated}
           onConnectorUpdated={handleConnectorUpdated}
         />
       )}
 
-      {/* File View Modal */}
       {viewModalOpen && selectedFile && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden">
@@ -1477,7 +1343,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
                   <FileText className="h-12 w-12 text-gray-400" />
                   <div>
                     <h4 className="text-xl font-medium text-gray-900">{selectedFile.filename}</h4>
-                    <p className="text-gray-500">{selectedFile.content_type}</p>
+                    <p className="text-gray-500">{selectedFile.contentType}</p>
                   </div>
                 </div>
                 
@@ -1498,7 +1364,7 @@ const DomainWorkspace: React.FC<DomainWorkspaceProps> = ({
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700">Uploaded By</label>
-                    <p className="text-sm text-gray-900">{selectedFile.uploaded_by || 'Unknown'}</p>
+                    <p className="text-sm text-gray-900">{selectedFile.uploadedBy || 'Unknown'}</p>
                   </div>
                 </div>
 
